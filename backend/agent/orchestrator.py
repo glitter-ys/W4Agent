@@ -1,0 +1,376 @@
+from __future__ import annotations
+
+import json
+from typing import Any, TypedDict, Annotated
+from enum import Enum
+
+from langgraph.graph import StateGraph, END
+import structlog
+
+from agent.agents.master_agent import MasterAgent
+from agent.agents.crawler_agent import CrawlerAgent
+from agent.agents.detector_agent import DetectorAgent
+from agent.agents.reporter_agent import ReporterAgent
+from agent.llm.provider import get_llm
+from agent.memory.short_term import ShortTermMemory
+from agent.memory.long_term import LongTermMemory
+
+logger = structlog.get_logger()
+
+
+class PipelineState(TypedDict):
+    """State shared across all nodes in the LangGraph pipeline."""
+    task_id: str
+    target_url: str
+    config: dict
+    pages_discovered: int
+    pages_tested: int
+    issues_found: int
+    current_action: str
+    current_url: str
+    explored_urls: list[str]
+    pending_urls: list[str]
+    pending_test_urls: list[str]
+    all_issues: list[dict]
+    report_data: dict
+    error: str | None
+    iteration: int
+    max_iterations: int
+
+
+class Orchestrator:
+    """Multi-agent orchestrator using LangGraph state machine.
+
+    Controls the flow between Master, Crawler, Detector, and Reporter agents.
+    """
+
+    def __init__(self, task_id: str, config: dict):
+        self.task_id = task_id
+        self.config = config
+        self.llm = get_llm()
+
+        # Shared memory
+        self.short_term_memory = ShortTermMemory()
+        self.long_term_memory = LongTermMemory()
+
+        # Initialize agents
+        self.master = MasterAgent(
+            name="Master",
+            llm=self.llm,
+            task_id=task_id,
+            short_term_memory=self.short_term_memory,
+            long_term_memory=self.long_term_memory,
+        )
+        self.crawler = CrawlerAgent(
+            name="Crawler",
+            llm=self.llm,
+            task_id=task_id,
+            short_term_memory=self.short_term_memory,
+            long_term_memory=self.long_term_memory,
+        )
+        self.detector = DetectorAgent(
+            name="Detector",
+            llm=self.llm,
+            task_id=task_id,
+            short_term_memory=self.short_term_memory,
+            long_term_memory=self.long_term_memory,
+        )
+        self.reporter = ReporterAgent(
+            name="Reporter",
+            llm=self.llm,
+            task_id=task_id,
+            short_term_memory=self.short_term_memory,
+            long_term_memory=self.long_term_memory,
+        )
+
+        # Build the state graph
+        self.graph = self._build_graph()
+
+    def _build_graph(self) -> StateGraph:
+        """Build the LangGraph state machine for the detection pipeline."""
+        graph = StateGraph(PipelineState)
+
+        # Add nodes
+        graph.add_node("plan", self._plan_node)
+        graph.add_node("explore", self._explore_node)
+        graph.add_node("test", self._test_node)
+        graph.add_node("report", self._report_node)
+
+        # Set entry point
+        graph.set_entry_point("plan")
+
+        # Add conditional edges from plan node
+        graph.add_conditional_edges(
+            "plan",
+            self._route_from_plan,
+            {
+                "explore": "explore",
+                "test": "test",
+                "report": "report",
+                "end": END,
+            },
+        )
+
+        # After explore/test, go back to plan
+        graph.add_edge("explore", "plan")
+        graph.add_edge("test", "plan")
+
+        # After report, end
+        graph.add_edge("report", END)
+
+        return graph.compile()
+
+    def _route_from_plan(self, state: PipelineState) -> str:
+        """Determine the next node based on the master agent's decision."""
+        action = state.get("current_action", "EXPLORE")
+        iteration = state.get("iteration", 0)
+        max_iterations = state.get("max_iterations", 50)
+
+        # Safety check: prevent infinite loops
+        if iteration >= max_iterations:
+            logger.warning("max_iterations_reached", task_id=self.task_id)
+            return "report"
+
+        action_map = {
+            "EXPLORE": "explore",
+            "TEST": "test",
+            "REPORT": "report",
+            "COMPLETE": "end",
+        }
+        return action_map.get(action, "explore")
+
+    async def _plan_node(self, state: PipelineState) -> PipelineState:
+        """Master agent decides the next action."""
+        decision = await self.master.run({
+            "target_url": state["target_url"],
+            "config": state["config"],
+            "pages_discovered": state["pages_discovered"],
+            "pages_tested": state["pages_tested"],
+            "issues_found": state["issues_found"],
+        })
+
+        state["current_action"] = decision.get("action", "EXPLORE")
+        state["iteration"] = state.get("iteration", 0) + 1
+
+        logger.info(
+            "plan_decision",
+            task_id=self.task_id,
+            action=state["current_action"],
+            iteration=state["iteration"],
+        )
+        return state
+
+    async def _explore_node(self, state: PipelineState) -> PipelineState:
+        """Crawler agent explores pages."""
+        from crawler.adaptive_crawler import AdaptiveCrawler
+
+        crawler = AdaptiveCrawler(task_id=self.task_id, config=state["config"])
+
+        # Explore from current URL or first pending URL
+        url_to_explore = (
+            state["pending_urls"][0] if state["pending_urls"]
+            else state["target_url"]
+        )
+
+        try:
+            result = await crawler.explore_page(url_to_explore)
+
+            # Update state with discovered pages
+            new_urls = [u for u in result.get("discovered_urls", []) if u not in state["explored_urls"]]
+            state["explored_urls"].append(url_to_explore)
+            state["pending_urls"] = [u for u in state["pending_urls"] if u != url_to_explore]
+            state["pending_urls"].extend(new_urls)
+            state["pending_test_urls"].append(url_to_explore)
+            state["pages_discovered"] = len(state["explored_urls"]) + len(state["pending_urls"])
+
+            # Update DB
+            await self._update_task_progress(state)
+
+        except Exception as e:
+            logger.error("explore_error", url=url_to_explore, error=str(e))
+            # Remove failed URL from pending
+            state["pending_urls"] = [u for u in state["pending_urls"] if u != url_to_explore]
+
+        return state
+
+    async def _test_node(self, state: PipelineState) -> PipelineState:
+        """Detector agent tests pages for accessibility."""
+        from crawler.adaptive_crawler import AdaptiveCrawler
+        from detector.detection_engine import DetectionEngine
+
+        if not state["pending_test_urls"]:
+            return state
+
+        url_to_test = state["pending_test_urls"].pop(0)
+
+        try:
+            # Get page data
+            crawler = AdaptiveCrawler(task_id=self.task_id, config=state["config"])
+            page_data = await crawler.get_page_data(url_to_test)
+
+            # Run rule-based detection
+            detection_engine = DetectionEngine()
+            rule_issues = await detection_engine.detect(page_data)
+
+            # Run AI detection
+            ai_result = await self.detector.run({
+                "url": url_to_test,
+                "title": page_data.get("title", ""),
+                "a11y_tree": page_data.get("a11y_tree", {}),
+                "html_snippet": page_data.get("html", "")[:5000],
+                "rule_issues": rule_issues,
+            })
+
+            # Store issues
+            all_issues = ai_result.get("all_issues", [])
+            state["all_issues"].extend(all_issues)
+            state["issues_found"] = len(state["all_issues"])
+            state["pages_tested"] += 1
+
+            # Save issues to DB
+            await self._save_issues(url_to_test, all_issues)
+            await self._update_task_progress(state)
+
+        except Exception as e:
+            logger.error("test_error", url=url_to_test, error=str(e))
+
+        return state
+
+    async def _report_node(self, state: PipelineState) -> PipelineState:
+        """Reporter agent generates the final report."""
+        # Calculate issue distribution
+        issue_dist = {}
+        for issue in state["all_issues"]:
+            criterion = issue.get("wcag_criterion", "unknown")
+            issue_dist[criterion] = issue_dist.get(criterion, 0) + 1
+
+        severity_counts = {"critical": 0, "major": 0, "minor": 0, "info": 0}
+        for issue in state["all_issues"]:
+            sev = issue.get("severity", "minor")
+            severity_counts[sev] = severity_counts.get(sev, 0) + 1
+
+        # Calculate score
+        total_pages = state["pages_tested"]
+        total_issues = state["issues_found"]
+        if total_pages > 0:
+            overall_score = max(0, 100 - (total_issues / total_pages * 10))
+        else:
+            overall_score = 0
+
+        # Generate report via reporter agent
+        report_result = await self.reporter.run({
+            "total_pages": total_pages,
+            "total_issues": total_issues,
+            "critical_issues": severity_counts["critical"],
+            "major_issues": severity_counts["major"],
+            "minor_issues": severity_counts["minor"],
+            "overall_score": round(overall_score, 1),
+            "issue_distribution": issue_dist,
+        })
+
+        state["report_data"] = {
+            "overall_score": round(overall_score, 1),
+            "severity_counts": severity_counts,
+            "summary": report_result.get("summary", ""),
+            "recommendations": report_result.get("recommendations", []),
+        }
+
+        # Save report to DB
+        await self._save_report(state)
+
+        return state
+
+    async def _update_task_progress(self, state: PipelineState):
+        """Update task progress in the database."""
+        from app.db.session import async_session_factory
+        from app.models.task import Task
+        from sqlalchemy import select
+
+        async with async_session_factory() as db:
+            result = await db.execute(select(Task).where(Task.id == self.task_id))
+            task = result.scalar_one_or_none()
+            if task:
+                task.pages_discovered = state["pages_discovered"]
+                task.pages_tested = state["pages_tested"]
+                task.issues_found = state["issues_found"]
+                await db.commit()
+
+        # Notify via WebSocket
+        from app.services.notification_service import NotificationService
+        await NotificationService.notify_task_progress(self.task_id, {
+            "pages_discovered": state["pages_discovered"],
+            "pages_tested": state["pages_tested"],
+            "issues_found": state["issues_found"],
+            "current_url": state.get("current_url", ""),
+        })
+
+    async def _save_issues(self, url: str, issues: list[dict]):
+        """Save detected issues to the database."""
+        from app.db.session import async_session_factory
+        from app.models.issue import Issue
+        from app.models.page import Page
+        from sqlalchemy import select
+
+        async with async_session_factory() as db:
+            # Find or create page record
+            result = await db.execute(
+                select(Page).where(Page.task_id == self.task_id, Page.url == url)
+            )
+            page = result.scalar_one_or_none()
+
+            if not page:
+                page = Page(task_id=self.task_id, url=url)
+                db.add(page)
+                await db.flush()
+
+            for issue_data in issues:
+                issue = Issue(
+                    task_id=self.task_id,
+                    page_id=page.id,
+                    wcag_criterion=issue_data.get("wcag_criterion", "unknown"),
+                    wcag_level=issue_data.get("wcag_level", "A"),
+                    rule_id=issue_data.get("rule_id", "ai-detection"),
+                    severity=issue_data.get("severity", "minor"),
+                    title=issue_data.get("title", "Untitled Issue"),
+                    description=issue_data.get("description", ""),
+                    recommendation=issue_data.get("recommendation"),
+                    element_selector=issue_data.get("element_selector"),
+                    element_html=issue_data.get("element_html"),
+                    detected_by=issue_data.get("detected_by", "ai"),
+                    confidence=issue_data.get("confidence"),
+                )
+                db.add(issue)
+
+            await db.commit()
+
+    async def _save_report(self, state: PipelineState):
+        """Save the generated report to the database."""
+        from app.services.report_service import ReportService
+        from app.db.session import async_session_factory
+
+        async with async_session_factory() as db:
+            await ReportService.generate_report(self.task_id, db)
+
+    async def run(self, target_url: str) -> PipelineState:
+        """Execute the full detection pipeline."""
+        initial_state: PipelineState = {
+            "task_id": self.task_id,
+            "target_url": target_url,
+            "config": self.config,
+            "pages_discovered": 0,
+            "pages_tested": 0,
+            "issues_found": 0,
+            "current_action": "EXPLORE",
+            "current_url": target_url,
+            "explored_urls": [],
+            "pending_urls": [target_url],
+            "pending_test_urls": [],
+            "all_issues": [],
+            "report_data": {},
+            "error": None,
+            "iteration": 0,
+            "max_iterations": self.config.get("max_pages", 100),
+        }
+
+        final_state = await self.graph.ainvoke(initial_state)
+        return final_state
