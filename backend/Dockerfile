@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # WeasyPrint dependencies
     libpango-1.0-0 libpangoft2-1.0-0 libpangocairo-1.0-0 \
     libgdk-pixbuf-2.0-0 libffi-dev shared-mime-info \
+    # CJK fonts for Chinese/Japanese/Korean text rendering in screenshots
+    fonts-noto-cjk \
     # General
     curl \
     && rm -rf /var/lib/apt/lists/*

@@ -18,6 +18,7 @@ class TaskConfig(BaseModel):
     viewport_height: int = 720
     enable_ai_detection: bool = True
     enable_screenshots: bool = True
+    enable_vision_detection: bool = False
 
 
 class TaskCreate(BaseModel):

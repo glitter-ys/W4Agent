@@ -15,7 +15,9 @@ class PageResponse(BaseModel):
     title: str | None
     status: PageStatus
     depth: int
+    content_hash: str | None = None
     screenshot_path: str | None
+    annotated_screenshot_path: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

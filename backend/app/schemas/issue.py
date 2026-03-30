@@ -25,6 +25,7 @@ class IssueResponse(BaseModel):
     screenshot_path: str | None
     detected_by: str
     confidence: float | None
+    context: dict | None = None
     jira_issue_key: str | None
     created_at: datetime
 

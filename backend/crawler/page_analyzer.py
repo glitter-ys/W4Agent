@@ -31,6 +31,7 @@ class PageAnalyzer:
         - landmarks: ARIA landmarks
         - content_hash: Hash for deduplication
         - html: Trimmed HTML of the page
+        - bounding_boxes: Element bounding boxes for visual annotation
         """
         url = page.url
         title = await page.title()
@@ -39,6 +40,7 @@ class PageAnalyzer:
         a11y_tree = await self._get_a11y_tree(page)
         page_data = await self._extract_page_data(page)
         content_hash = await self._compute_content_hash(page)
+        bounding_boxes = await self._extract_element_bounding_boxes(page)
 
         return {
             "url": url,
@@ -53,6 +55,7 @@ class PageAnalyzer:
             "content_hash": content_hash,
             "html": page_data.get("html", ""),
             "lang": page_data.get("lang", ""),
+            "bounding_boxes": bounding_boxes,
         }
 
     async def _get_a11y_tree(self, page: Page) -> dict | None:
@@ -167,3 +170,71 @@ class PageAnalyzer:
             return hashlib.sha256(content.encode()).hexdigest()[:16]
         except Exception:
             return hashlib.sha256(page.url.encode()).hexdigest()[:16]
+
+    async def _extract_element_bounding_boxes(self, page: Page) -> list[dict]:
+        """Extract bounding boxes for key interactive and visual elements.
+
+        Returns a list of dicts with selector, tag, text, alt, aria_label, role,
+        and bbox {x, y, width, height} for each visible element.
+        """
+        try:
+            elements = await page.evaluate("""() => {
+                const selectors = 'img, button, [role="button"], a, input, select, textarea, [role="img"], [role="link"], [role="checkbox"], [role="radio"]';
+                const els = Array.from(document.querySelectorAll(selectors));
+                const results = [];
+
+                for (const el of els) {
+                    const rect = el.getBoundingClientRect();
+                    // Skip invisible elements
+                    if (rect.width === 0 || rect.height === 0) continue;
+
+                    // Build a unique CSS selector
+                    let selector = el.tagName.toLowerCase();
+                    if (el.id) {
+                        selector += '#' + CSS.escape(el.id);
+                    } else {
+                        // Use nth-child for uniqueness
+                        const parent = el.parentElement;
+                        if (parent) {
+                            const siblings = Array.from(parent.children);
+                            const idx = siblings.indexOf(el) + 1;
+                            selector += ':nth-child(' + idx + ')';
+                        }
+                        // Prepend parent tag for more specificity
+                        if (parent && parent !== document.body && parent !== document.documentElement) {
+                            let parentSel = parent.tagName.toLowerCase();
+                            if (parent.id) {
+                                parentSel += '#' + CSS.escape(parent.id);
+                            }
+                            selector = parentSel + ' > ' + selector;
+                        }
+                    }
+
+                    // Use scroll offsets to get page-absolute coordinates
+                    // (full_page screenshot captures the entire scrollable area)
+                    const scrollX = window.scrollX || window.pageXOffset;
+                    const scrollY = window.scrollY || window.pageYOffset;
+
+                    results.push({
+                        selector: selector,
+                        tag: el.tagName.toLowerCase(),
+                        text: (el.textContent || '').trim().slice(0, 100),
+                        alt: el.getAttribute('alt'),
+                        aria_label: el.getAttribute('aria-label'),
+                        role: el.getAttribute('role'),
+                        bbox: {
+                            x: Math.round(rect.x + scrollX),
+                            y: Math.round(rect.y + scrollY),
+                            width: Math.round(rect.width),
+                            height: Math.round(rect.height),
+                        },
+                    });
+
+                    if (results.length >= 150) break;
+                }
+                return results;
+            }""")
+            return elements
+        except Exception as e:
+            logger.warning("bounding_box_extraction_error", error=str(e))
+            return []

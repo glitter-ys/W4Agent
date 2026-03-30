@@ -70,3 +70,40 @@ DETECTOR_PAGE_ANALYSIS_PROMPT = """请分析以下页面的无障碍性问题。
 
 请以JSON数组格式返回发现的问题列表。
 """
+
+DETECTOR_VISION_ANALYSIS_PROMPT = """请对照以下网页截图和元素标签信息，进行多模态视觉无障碍分析。
+
+页面URL: {url}
+页面标题: {title}
+
+## 元素列表（含 bounding box 坐标与标签）
+{elements_json}
+
+## 规则检测已发现的问题
+{rule_issues}
+
+## 分析要求
+请仔细对比每个元素"看起来是什么"（视觉外观）与"标签写了什么"（alt/aria-label/text），重点关注：
+
+1. **图标/图片标签准确性**：alt 文本是否真实描述了图片内容（如一个关闭图标的 alt 不应该写 "image_01"）
+2. **按钮文字意义**：按钮的可见文字或 aria-label 是否能让用户理解其功能
+3. **图片 alt 文本质量**：alt 是否有意义、是否过于笼统或是占位符
+4. **仅靠视觉传达的信息**：是否存在仅通过颜色/位置传达含义但没有文字替代的情况
+5. **对比度问题**：文字与背景之间是否存在明显的低对比度区域
+
+## 输出格式
+请以 JSON 数组格式返回发现的问题，每个问题格式如下：
+{{
+    "wcag_criterion": "相关WCAG准则编号",
+    "wcag_level": "A|AA|AAA",
+    "severity": "critical|major|minor|info",
+    "title": "问题标题",
+    "description": "详细描述：视觉外观是什么 vs 标签写了什么",
+    "recommendation": "修复建议",
+    "element_selector": "问题元素CSS选择器（来自元素列表）",
+    "element_html": "问题元素HTML片段（可选）",
+    "confidence": 0.9
+}}
+
+如果没有发现问题，返回空数组 []。
+"""

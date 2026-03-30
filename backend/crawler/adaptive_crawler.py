@@ -66,7 +66,7 @@ class AdaptiveCrawler:
 
             # Analyze the page
             page_data = await self.page_analyzer.analyze(page)
-            self._page_data_cache[url] = page_data
+            page_data["screenshot_path"] = None
 
             # Check for duplicates
             is_dup, original_url = self.deduplicator.is_duplicate(url, page_data)
@@ -75,6 +75,7 @@ class AdaptiveCrawler:
                 self.state_graph.get_node(url).is_duplicate = True
                 self.state_graph.update_node_status(url, NodeStatus.SKIPPED)
                 logger.info("page_skipped_duplicate", url=url, original=original_url)
+                self._page_data_cache[url] = page_data
                 return {"url": url, "success": True, "discovered_urls": [], "is_duplicate": True}
 
             # Update state graph
@@ -83,6 +84,10 @@ class AdaptiveCrawler:
 
             # Take screenshot
             screenshot_path = await self._take_screenshot(page, url)
+            page_data["screenshot_path"] = screenshot_path
+
+            # Cache page data after screenshot is taken
+            self._page_data_cache[url] = page_data
 
             # Discover links
             base_url = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
@@ -159,6 +164,11 @@ class AdaptiveCrawler:
             await executor.navigate(url)
             await self.event_responder.check_and_handle(page)
             page_data = await self.page_analyzer.analyze(page)
+
+            # Take screenshot on re-navigate
+            screenshot_path = await self._take_screenshot(page, url)
+            page_data["screenshot_path"] = screenshot_path
+
             self._page_data_cache[url] = page_data
             return page_data
         finally:
@@ -176,7 +186,7 @@ class AdaptiveCrawler:
             await page.screenshot(path=path, full_page=True)
             return path
         except Exception as e:
-            logger.warning("screenshot_error", url=url, error=str(e))
+            logger.error("screenshot_error", url=url, error=str(e), screenshot_dir=settings.SCREENSHOT_DIR)
             return None
 
     async def _save_page_to_db(self, url: str, page_data: dict, screenshot_path: str | None):

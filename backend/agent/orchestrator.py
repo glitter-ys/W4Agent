@@ -14,6 +14,8 @@ from agent.agents.reporter_agent import ReporterAgent
 from agent.llm.provider import get_llm
 from agent.memory.short_term import ShortTermMemory
 from agent.memory.long_term import LongTermMemory
+from app.config import settings
+from crawler.adaptive_crawler import AdaptiveCrawler
 
 logger = structlog.get_logger()
 
@@ -52,6 +54,9 @@ class Orchestrator:
         # Shared memory
         self.short_term_memory = ShortTermMemory()
         self.long_term_memory = LongTermMemory()
+
+        # Shared crawler instance (reused across explore and test nodes)
+        self.adaptive_crawler = AdaptiveCrawler(task_id=task_id, config=config)
 
         # Initialize agents
         self.master = MasterAgent(
@@ -162,9 +167,7 @@ class Orchestrator:
 
     async def _explore_node(self, state: PipelineState) -> PipelineState:
         """Crawler agent explores pages."""
-        from crawler.adaptive_crawler import AdaptiveCrawler
-
-        crawler = AdaptiveCrawler(task_id=self.task_id, config=state["config"])
+        crawler = self.adaptive_crawler
 
         # Explore from current URL or first pending URL
         url_to_explore = (
@@ -195,8 +198,8 @@ class Orchestrator:
 
     async def _test_node(self, state: PipelineState) -> PipelineState:
         """Detector agent tests pages for accessibility."""
-        from crawler.adaptive_crawler import AdaptiveCrawler
         from detector.detection_engine import DetectionEngine
+        from detector.ai_based.visual_analyzer import VisualAnnotator
 
         if not state["pending_test_urls"]:
             return state
@@ -204,22 +207,32 @@ class Orchestrator:
         url_to_test = state["pending_test_urls"].pop(0)
 
         try:
-            # Get page data
-            crawler = AdaptiveCrawler(task_id=self.task_id, config=state["config"])
-            page_data = await crawler.get_page_data(url_to_test)
+            # Get page data (uses cache from explore_node since same crawler instance)
+            page_data = await self.adaptive_crawler.get_page_data(url_to_test)
+
+            screenshot_path = page_data.get("screenshot_path")
+            bounding_boxes = page_data.get("bounding_boxes", [])
 
             # Run rule-based detection
             detection_engine = DetectionEngine()
             rule_issues = await detection_engine.detect(page_data)
 
-            # Run AI detection
-            ai_result = await self.detector.run({
+            # Run AI detection (includes multimodal vision if screenshot available)
+            enable_vision = state["config"].get(
+                "enable_vision_detection", settings.ENABLE_VISION_DETECTION
+            )
+            ai_input = {
                 "url": url_to_test,
                 "title": page_data.get("title", ""),
                 "a11y_tree": page_data.get("a11y_tree", {}),
                 "html_snippet": page_data.get("html", "")[:5000],
                 "rule_issues": rule_issues,
-            })
+            }
+            if enable_vision and screenshot_path:
+                ai_input["screenshot_path"] = screenshot_path
+                ai_input["bounding_boxes"] = bounding_boxes
+
+            ai_result = await self.detector.run(ai_input)
 
             # Store issues
             all_issues = ai_result.get("all_issues", [])
@@ -227,8 +240,18 @@ class Orchestrator:
             state["issues_found"] = len(state["all_issues"])
             state["pages_tested"] += 1
 
-            # Save issues to DB
-            await self._save_issues(url_to_test, all_issues)
+            # Generate annotated screenshot (works for both rule-based and AI issues)
+            annotated_path = None
+            if screenshot_path and all_issues:
+                annotator = VisualAnnotator()
+                annotated_path = annotator.annotate_screenshot(
+                    screenshot_path, all_issues, bounding_boxes
+                )
+
+            # Save issues to DB (with bounding box context)
+            await self._save_issues(
+                url_to_test, all_issues, bounding_boxes, annotated_path, screenshot_path
+            )
             await self._update_task_progress(state)
 
         except Exception as e:
@@ -304,12 +327,27 @@ class Orchestrator:
             "current_url": state.get("current_url", ""),
         })
 
-    async def _save_issues(self, url: str, issues: list[dict]):
+    async def _save_issues(
+        self,
+        url: str,
+        issues: list[dict],
+        bounding_boxes: list[dict] | None = None,
+        annotated_screenshot_path: str | None = None,
+        screenshot_path: str | None = None,
+    ):
         """Save detected issues to the database."""
         from app.db.session import async_session_factory
         from app.models.issue import Issue
         from app.models.page import Page
         from sqlalchemy import select
+
+        # Build selector -> bbox lookup
+        bbox_lookup: dict[str, dict] = {}
+        if bounding_boxes:
+            for bb in bounding_boxes:
+                selector = bb.get("selector")
+                if selector and bb.get("bbox"):
+                    bbox_lookup[selector] = bb["bbox"]
 
         async with async_session_factory() as db:
             # Find or create page record
@@ -323,7 +361,19 @@ class Orchestrator:
                 db.add(page)
                 await db.flush()
 
+            # Update screenshot paths on the page
+            if screenshot_path:
+                page.screenshot_path = screenshot_path
+            if annotated_screenshot_path:
+                page.annotated_screenshot_path = annotated_screenshot_path
+
             for issue_data in issues:
+                # Build context with bounding box if available
+                context = issue_data.get("context") or {}
+                selector = issue_data.get("element_selector")
+                if selector and selector in bbox_lookup:
+                    context["bounding_box"] = bbox_lookup[selector]
+
                 issue = Issue(
                     task_id=self.task_id,
                     page_id=page.id,
@@ -336,8 +386,10 @@ class Orchestrator:
                     recommendation=issue_data.get("recommendation"),
                     element_selector=issue_data.get("element_selector"),
                     element_html=issue_data.get("element_html"),
+                    screenshot_path=screenshot_path,
                     detected_by=issue_data.get("detected_by", "ai"),
                     confidence=issue_data.get("confidence"),
+                    context=context if context else None,
                 )
                 db.add(issue)
 

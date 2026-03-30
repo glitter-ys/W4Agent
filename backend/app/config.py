@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Project root: backend/
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=("../.env", ".env"), env_file_encoding="utf-8"
+    )
 
     # Application
     APP_ENV: Literal["development", "staging", "production"] = "development"
@@ -37,12 +43,15 @@ class Settings(BaseSettings):
     # Playwright
     BROWSER_POOL_SIZE: int = 3
     PAGE_TIMEOUT_MS: int = 30000
-    SCREENSHOT_DIR: str = "/tmp/w4agent/screenshots"
+    SCREENSHOT_DIR: str = str(_BACKEND_DIR / "screenshots")
 
     # Jira Integration
     JIRA_BASE_URL: str = ""
     JIRA_API_TOKEN: str = ""
     JIRA_PROJECT_KEY: str = ""
+
+    # Vision Detection
+    ENABLE_VISION_DETECTION: bool = False
 
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]

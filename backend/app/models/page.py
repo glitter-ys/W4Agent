@@ -38,6 +38,9 @@ class Page(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Screenshot path
     screenshot_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
+    # Annotated screenshot path (with visual issue markers)
+    annotated_screenshot_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
     # A11y tree snapshot (JSON)
     a11y_tree: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
