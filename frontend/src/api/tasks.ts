@@ -1,6 +1,6 @@
 import apiClient from './client';
 import type { Task, TaskCreate } from '../types/task';
-import type { Issue } from '../types/a11y';
+import type { Issue, PageInfo } from '../types/a11y';
 
 export async function getTasks(params?: {
   project_id?: string;
@@ -43,6 +43,16 @@ export async function getTaskIssues(taskId: string, params?: {
   limit?: number;
 }) {
   const { data } = await apiClient.get<{ items: Issue[]; total: number }>('/issues/', {
+    params: { task_id: taskId, ...params },
+  });
+  return data;
+}
+
+export async function getTaskPages(taskId: string, params?: {
+  skip?: number;
+  limit?: number;
+}) {
+  const { data } = await apiClient.get<{ items: PageInfo[]; total: number }>('/pages/', {
     params: { task_id: taskId, ...params },
   });
   return data;

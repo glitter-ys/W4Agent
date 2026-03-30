@@ -52,7 +52,7 @@ services:
         condition: service_healthy
     volumes:
       - ./backend:/app
-      - screenshots:/tmp/w4agent/screenshots
+      - ./data/screenshots:/app/screenshots
       - reports:/tmp/w4agent/reports
 
   # Frontend
@@ -68,5 +68,4 @@ services:
 volumes:
   pgdata:
   redisdata:
-  screenshots:
   reports:

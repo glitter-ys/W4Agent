@@ -10,6 +10,7 @@ export interface TaskConfig {
   viewport_height: number;
   enable_ai_detection: boolean;
   enable_screenshots: boolean;
+  enable_vision_detection: boolean;
 }
 
 export interface Task {

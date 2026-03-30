@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback } from 'react';
+import React, { useEffect, useCallback, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card,
@@ -15,6 +15,7 @@ import {
   Timeline,
   Spin,
   Statistic,
+  Empty,
   message,
 } from 'antd';
 import {
@@ -22,10 +23,14 @@ import {
   PauseCircleOutlined,
   FileTextOutlined,
   BugOutlined,
+  PictureOutlined,
 } from '@ant-design/icons';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { TaskWebSocket } from '../../api/ws';
+import { getTaskPages } from '../../api/tasks';
 import type { WSMessage } from '../../types/ws';
+import type { PageInfo } from '../../types/a11y';
+import AnnotatedScreenshot from '../../components/AnnotatedScreenshot';
 import dayjs from 'dayjs';
 
 const { Title, Text } = Typography;
@@ -47,6 +52,7 @@ const severityLabels: Record<string, string> = {
 const TaskDetail: React.FC = () => {
   const { taskId } = useParams<{ taskId: string }>();
   const navigate = useNavigate();
+  const [pages, setPages] = useState<PageInfo[]>([]);
   const {
     currentTask,
     taskProgress,
@@ -89,10 +95,15 @@ const TaskDetail: React.FC = () => {
         case 'task_failed':
           fetchTask(taskId!);
           fetchIssues(taskId!);
+          // Reload pages so screenshot tab picks up newly saved screenshots
+          getTaskPages(taskId!, { limit: 200 }).then((data) => {
+            setPages(data.items);
+          }).catch(() => {});
           break;
       }
     },
-    [taskId, updateProgress, addAgentLog, fetchTask, fetchIssues]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [taskId]
   );
 
   useEffect(() => {
@@ -100,6 +111,11 @@ const TaskDetail: React.FC = () => {
       fetchTask(taskId);
       fetchIssues(taskId);
       clearLogs();
+
+      // Load pages for screenshot tab
+      getTaskPages(taskId, { limit: 200 }).then((data) => {
+        setPages(data.items);
+      }).catch(() => {});
 
       // Connect WebSocket
       wsRef.current = new TaskWebSocket(taskId, handleWSMessage);
@@ -109,9 +125,10 @@ const TaskDetail: React.FC = () => {
     return () => {
       wsRef.current?.disconnect();
     };
-  }, [taskId, fetchTask, fetchIssues, clearLogs, handleWSMessage]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskId]);
 
-  if (loading || !currentTask) {
+  if (!currentTask) {
     return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
   }
 
@@ -176,7 +193,9 @@ const TaskDetail: React.FC = () => {
       key: 'detected_by',
       width: 100,
       render: (v: string) => (
-        <Tag color={v === 'ai' ? 'purple' : 'blue'}>{v === 'ai' ? 'AI检测' : '规则检测'}</Tag>
+        <Tag color={v === 'vision_ai' ? 'geekblue' : v === 'ai' ? 'purple' : 'blue'}>
+          {v === 'vision_ai' ? '视觉AI' : v === 'ai' ? 'AI检测' : '规则检测'}
+        </Tag>
       ),
     },
   ];
@@ -301,6 +320,35 @@ const TaskDetail: React.FC = () => {
               ),
             },
             {
+              key: 'screenshots',
+              label: (
+                <span>
+                  <PictureOutlined style={{ marginRight: 4 }} />
+                  页面截图
+                </span>
+              ),
+              children: (
+                <div>
+                  {pages.filter(p => p.screenshot_path).length > 0 ? (
+                    <Space direction="vertical" size="large" style={{ width: '100%' }}>
+                      {pages
+                        .filter(p => p.screenshot_path)
+                        .map(page => (
+                          <Card key={page.id} type="inner" size="small">
+                            <AnnotatedScreenshot
+                              page={page}
+                              issues={issues}
+                            />
+                          </Card>
+                        ))}
+                    </Space>
+                  ) : (
+                    <Empty description="暂无页面截图" />
+                  )}
+                </div>
+              ),
+            },
+            {
               key: 'config',
               label: '任务配置',
               children: (
@@ -309,6 +357,7 @@ const TaskDetail: React.FC = () => {
                   <Descriptions.Item label="最大深度">{task.config?.max_depth || 5}</Descriptions.Item>
                   <Descriptions.Item label="最大页面">{task.config?.max_pages || 50}</Descriptions.Item>
                   <Descriptions.Item label="AI检测">{task.config?.enable_ai_detection ? '启用' : '禁用'}</Descriptions.Item>
+                  <Descriptions.Item label="视觉检测">{task.config?.enable_vision_detection ? '启用' : '禁用'}</Descriptions.Item>
                   <Descriptions.Item label="视口">{task.config?.viewport_width || 1280} x {task.config?.viewport_height || 720}</Descriptions.Item>
                   <Descriptions.Item label="截图">{task.config?.enable_screenshots ? '启用' : '禁用'}</Descriptions.Item>
                 </Descriptions>

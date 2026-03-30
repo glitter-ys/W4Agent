@@ -14,6 +14,7 @@ import {
   Spin,
   Divider,
   message,
+  Empty,
 } from 'antd';
 import {
   DownloadOutlined,
@@ -23,9 +24,10 @@ import {
   ExclamationCircleOutlined,
 } from '@ant-design/icons';
 import { getReportByTask, exportReport } from '../../api/reports';
-import { getTaskIssues } from '../../api/tasks';
+import { getTaskIssues, getTaskPages } from '../../api/tasks';
 import type { Report } from '../../types/report';
-import type { Issue } from '../../types/a11y';
+import type { Issue, PageInfo } from '../../types/a11y';
+import AnnotatedScreenshot from '../../components/AnnotatedScreenshot';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -33,6 +35,7 @@ const ReportView: React.FC = () => {
   const { taskId } = useParams<{ taskId: string }>();
   const [report, setReport] = useState<Report | null>(null);
   const [issues, setIssues] = useState<Issue[]>([]);
+  const [pages, setPages] = useState<PageInfo[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -44,12 +47,14 @@ const ReportView: React.FC = () => {
   const loadData = async (id: string) => {
     try {
       setLoading(true);
-      const [reportData, issueData] = await Promise.all([
+      const [reportData, issueData, pageData] = await Promise.all([
         getReportByTask(id),
         getTaskIssues(id, { limit: 200 }),
+        getTaskPages(id, { limit: 200 }),
       ]);
       setReport(reportData);
       setIssues(issueData.items);
+      setPages(pageData.items);
     } catch {
       message.error('加载报告失败');
     } finally {
@@ -187,6 +192,28 @@ const ReportView: React.FC = () => {
         </Card>
       )}
 
+      {/* Page Screenshots & Annotations */}
+      {pages.length > 0 && (
+        <Card title="页面截图与标注" style={{ marginBottom: 16 }}>
+          {pages.filter(p => p.screenshot_path).length > 0 ? (
+            <Space direction="vertical" size="large" style={{ width: '100%' }}>
+              {pages
+                .filter(p => p.screenshot_path)
+                .map(page => (
+                  <Card key={page.id} type="inner" size="small">
+                    <AnnotatedScreenshot
+                      page={page}
+                      issues={issues}
+                    />
+                  </Card>
+                ))}
+            </Space>
+          ) : (
+            <Empty description="暂无页面截图" />
+          )}
+        </Card>
+      )}
+
       {/* Issues Table */}
       <Card title={`问题详情 (${issues.length})`}>
         <Table
@@ -238,7 +265,9 @@ const ReportView: React.FC = () => {
               dataIndex: 'detected_by',
               width: 100,
               render: (v: string) => (
-                <Tag color={v === 'ai' ? 'purple' : 'blue'}>{v === 'ai' ? 'AI' : '规则'}</Tag>
+                <Tag color={v === 'vision_ai' ? 'geekblue' : v === 'ai' ? 'purple' : 'blue'}>
+                  {v === 'vision_ai' ? '视觉AI' : v === 'ai' ? 'AI' : '规则'}
+                </Tag>
               ),
             },
           ]}

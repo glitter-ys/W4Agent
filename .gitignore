@@ -11,11 +11,7 @@ build/
 .ruff_cache/
 .mypy_cache/
 
-# Environment
-.env
-.venv/
-venv/
-env/
+
 
 # IDE
 .vscode/
@@ -36,10 +32,6 @@ frontend/dist/
 *.db
 *.sqlite3
 /tmp/
-
-# Screenshots and reports
-screenshots/
-reports/
 
 # Docker
 *.log

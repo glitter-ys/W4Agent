@@ -19,6 +19,10 @@ export interface Issue {
   screenshot_path: string | null;
   detected_by: string;
   confidence: number | null;
+  context: {
+    bounding_box?: { x: number; y: number; width: number; height: number };
+    [key: string]: unknown;
+  } | null;
   jira_issue_key: string | null;
   created_at: string;
 }
@@ -31,5 +35,6 @@ export interface PageInfo {
   status: string;
   depth: number;
   screenshot_path: string | null;
+  annotated_screenshot_path: string | null;
   created_at: string;
 }

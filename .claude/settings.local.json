@@ -4,7 +4,11 @@
       "WebSearch",
       "Bash(python3:*)",
       "Bash(docker compose:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(docker system:*)",
+      "Bash(docker image:*)",
+      "Bash(docker builder:*)",
+      "Bash(docker exec:*)"
     ]
   }
 }

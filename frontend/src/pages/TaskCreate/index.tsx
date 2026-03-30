@@ -41,6 +41,7 @@ const TaskCreate: React.FC = () => {
         wcag_level: values.wcag_level,
         enable_ai_detection: values.enable_ai_detection,
         enable_screenshots: values.enable_screenshots,
+        enable_vision_detection: values.enable_vision_detection,
         viewport_width: values.viewport_width,
         viewport_height: values.viewport_height,
       };
@@ -78,6 +79,7 @@ const TaskCreate: React.FC = () => {
           wcag_level: 'AA',
           enable_ai_detection: true,
           enable_screenshots: true,
+          enable_vision_detection: false,
           viewport_width: 1280,
           viewport_height: 720,
           auto_start: true,
@@ -161,17 +163,22 @@ const TaskCreate: React.FC = () => {
         </Row>
 
         <Row gutter={16}>
-          <Col span={8}>
+          <Col span={6}>
             <Form.Item name="enable_ai_detection" label="AI智能检测" valuePropName="checked">
               <Switch />
             </Form.Item>
           </Col>
-          <Col span={8}>
+          <Col span={6}>
+            <Form.Item name="enable_vision_detection" label="视觉检测(多模态)" valuePropName="checked">
+              <Switch />
+            </Form.Item>
+          </Col>
+          <Col span={6}>
             <Form.Item name="enable_screenshots" label="页面截图" valuePropName="checked">
               <Switch />
             </Form.Item>
           </Col>
-          <Col span={8}>
+          <Col span={6}>
             <Form.Item name="auto_start" label="创建后立即执行" valuePropName="checked">
               <Switch />
             </Form.Item>
