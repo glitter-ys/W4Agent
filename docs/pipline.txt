@@ -1,0 +1,102 @@
+当你在前端新增一个检测任务后，整个系统的执行流程如下：                                                                                                                      
+                                                                                                                                                                              
+  ---                                                                                                                                                                         
+  第1步：前端提交任务                                                                                                                                                         
+                                                                                                                                                                              
+  页面: frontend/src/pages/TaskCreate/index.tsx                                                                                                                               
+
+  用户填写表单（目标URL、检测配置等），点击提交后：
+  1. 调用 useTaskStore.addTask() → POST /api/v1/tasks/ 创建任务（状态 PENDING）                                                                                               
+  2. 如果 auto_start=true，自动调用 startTask(id) → POST /api/v1/tasks/{id}/start
+  3. 前端跳转到 TaskDetail 页面，通过 WebSocket 实时监控进度
+
+  ---
+  第2步：后端接收并启动后台任务
+
+  文件: backend/app/api/v1/tasks.py
+
+  - create_task(): 在 PostgreSQL 中创建任务记录
+  - start_task(): 设置状态为 RUNNING，通过 FastAPI.BackgroundTasks 启动后台检测：
+  background_tasks.add_task(TaskService.run_detection, task_id)
+
+  ---
+  第3步：AgentEngine → Orchestrator（核心状态机）
+
+  文件: backend/agent/orchestrator.py
+
+  Orchestrator 构建一个 LangGraph 状态图，四个节点循环执行：
+
+  ┌──────────────────────────────────────────────┐
+  │                                              │
+  │   [Plan] ──→ 路由判断 ──→ [Explore] ──┐     │
+  │                  │         [Test]    ──┤     │
+  │                  │         [Report]  ──→ END │
+  │                  └─→ END                     │
+  │       ↑                      │               │
+  │       └──────────────────────┘               │
+  └──────────────────────────────────────────────┘
+
+  每一轮迭代：
+
+  a) Plan 节点 — MasterAgent 决策
+
+  MasterAgent 调用 LLM 根据当前进度（已探索/已测试/已发现问题数）决定下一步动作：
+  - EXPLORE — 去探索新页面
+  - TEST — 对已探索页面做无障碍检测
+  - REPORT — 生成最终报告
+  - COMPLETE — 结束
+
+  b) Explore 节点 — 自适应爬虫
+
+  AdaptiveCrawler.explore_page(url) 执行：
+  1. 从 BrowserPool 获取浏览器页面
+  2. 导航到目标 URL
+  3. EventResponder 处理弹窗/Cookie横幅/广告
+  4. PageAnalyzer 提取页面数据（A11y树、表单、链接、landmark等）
+  5. SemanticDeduplicator 语义去重
+  6. 截取全页截图
+  7. HeuristicStrategy 对发现的链接排序
+  8. 通过 WebSocket 通知前端进度
+
+  c) Test 节点 — 三层检测
+
+  1. 规则检测 — DetectionEngine 运行 7 条 WCAG 规则（alt文本、表单标签、标题层级、语言属性、地标区域、链接文本等）
+  2. AI 检测 — DetectorAgent 用 LLM 分析 A11y 树和 HTML 片段，发现规则无法覆盖的问题
+  3. 视觉检测（可选）— 将截图发给视觉 LLM（GPT-4V/Claude），结合元素边界框做多模态分析
+  4. 结果去重合并，生成带标注的截图，保存到数据库
+
+  d) Report 节点 — 报告生成
+
+  ReporterAgent 用 LLM 生成总结和改进建议，ReportService 生成最终报告
+
+  ---
+  第4步：实时通知前端
+
+  整个过程中，后端通过 WebSocket (ws/task/{task_id}) 持续推送：
+
+  ┌─────────────────┬─────────────────────────────────────────┐
+  │    消息类型     │                  内容                   │
+  ├─────────────────┼─────────────────────────────────────────┤
+  │ task_progress   │ 已发现页面数、已测试数、问题数、当前URL │
+  ├─────────────────┼─────────────────────────────────────────┤
+  │ agent_reasoning │ Agent 的推理过程（显示在时间线中）      │
+  ├─────────────────┼─────────────────────────────────────────┤
+  │ event_detected  │ 检测到弹窗/Cookie等事件                 │
+  ├─────────────────┼─────────────────────────────────────────┤
+  │ task_completed  │ 任务完成                                │
+  ├─────────────────┼─────────────────────────────────────────┤
+  │ task_failed     │ 任务失败                                │
+  └─────────────────┴─────────────────────────────────────────┘
+
+  前端 TaskDetail 页面实时更新进度条、Agent日志时间线和问题列表。
+
+  ---
+  第5步：任务完成
+
+  任务状态变为 COMPLETED，前端重新拉取任务详情、问题列表和页面数据展示最终结果。
+
+  完整生命周期
+
+  PENDING → RUNNING → COMPLETED / FAILED / CANCELLED
+     ↑         ↑              ↑
+   创建      启动     Pipeline结束/异常/用户取消

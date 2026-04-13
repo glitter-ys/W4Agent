@@ -8,7 +8,12 @@
       "Bash(docker system:*)",
       "Bash(docker image:*)",
       "Bash(docker builder:*)",
-      "Bash(docker exec:*)"
+      "Bash(docker exec:*)",
+      "Bash(pip3 list:*)",
+      "Bash(pip3 install:*)",
+      "Bash(rm -f /Users/guangzhi/.matplotlib/fontlist-*.json)",
+      "Read(//Users/guangzhi/.matplotlib/**)",
+      "Bash(find /Users/guangzhi/Desktop/W4Agent -type f -name test_* -o -name *_test.* -o -name *.test.* -o -name *.spec.*)"
     ]
   }
 }
