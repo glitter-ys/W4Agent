@@ -91,23 +91,27 @@ class Orchestrator:
         # Build the state graph
         self.graph = self._build_graph()
 
+    # How many pages to explore/test per node invocation before returning to the router
+    EXPLORE_BATCH_SIZE = 5
+    TEST_BATCH_SIZE = 3
+
     def _build_graph(self) -> StateGraph:
         """Build the LangGraph state machine for the detection pipeline."""
         graph = StateGraph(PipelineState)
 
         # Add nodes
-        graph.add_node("plan", self._plan_node)
+        graph.add_node("route", self._route_node)
         graph.add_node("explore", self._explore_node)
         graph.add_node("test", self._test_node)
         graph.add_node("report", self._report_node)
 
         # Set entry point
-        graph.set_entry_point("plan")
+        graph.set_entry_point("route")
 
-        # Add conditional edges from plan node
+        # Deterministic routing: route decides next step without LLM
         graph.add_conditional_edges(
-            "plan",
-            self._route_from_plan,
+            "route",
+            self._deterministic_route,
             {
                 "explore": "explore",
                 "test": "test",
@@ -116,146 +120,196 @@ class Orchestrator:
             },
         )
 
-        # After explore/test, go back to plan
-        graph.add_edge("explore", "plan")
-        graph.add_edge("test", "plan")
+        # After explore/test, go back to route (not LLM)
+        graph.add_edge("explore", "route")
+        graph.add_edge("test", "route")
 
         # After report, end
         graph.add_edge("report", END)
 
         return graph.compile()
 
-    def _route_from_plan(self, state: PipelineState) -> str:
-        """Determine the next node based on the master agent's decision."""
-        action = state.get("current_action", "EXPLORE")
+    def _deterministic_route(self, state: PipelineState) -> str:
+        """Pure deterministic routing — no LLM involved.
+
+        Rules (in priority order):
+        1. max_iterations reached → drain pending tests, then report
+        2. pending_test_urls accumulated enough (>= TEST_BATCH_SIZE) → test
+        3. pending_urls available and under page limit → explore
+        4. pending_test_urls remaining (any) → test
+        5. nothing left → report
+        """
         iteration = state.get("iteration", 0)
         max_iterations = state.get("max_iterations", 50)
+        pending_urls = state.get("pending_urls", [])
+        pending_test_urls = state.get("pending_test_urls", [])
+        explored_count = len(state.get("explored_urls", []))
+        max_pages = state.get("config", {}).get("max_pages", 100)
 
-        # Safety check: prevent infinite loops
+        # Safety: prevent infinite loops
         if iteration >= max_iterations:
-            logger.warning("max_iterations_reached", task_id=self.task_id)
+            logger.warning("max_iterations_reached", task_id=self.task_id, iteration=iteration)
+            if pending_test_urls:
+                return "test"
             return "report"
 
-        action_map = {
-            "EXPLORE": "explore",
-            "TEST": "test",
-            "REPORT": "report",
-            "COMPLETE": "end",
-        }
-        return action_map.get(action, "explore")
+        # If tests have piled up, drain them first
+        if len(pending_test_urls) >= self.TEST_BATCH_SIZE:
+            return "test"
 
-    async def _plan_node(self, state: PipelineState) -> PipelineState:
-        """Master agent decides the next action."""
-        decision = await self.master.run({
-            "target_url": state["target_url"],
-            "config": state["config"],
-            "pages_discovered": state["pages_discovered"],
-            "pages_tested": state["pages_tested"],
-            "issues_found": state["issues_found"],
-        })
+        # Still have URLs to explore and haven't hit page limit
+        if pending_urls and explored_count < max_pages:
+            return "explore"
 
-        state["current_action"] = decision.get("action", "EXPLORE")
+        # No more exploration, but still have pages to test
+        if pending_test_urls:
+            return "test"
+
+        # Everything done — generate report
+        # Only allow report if we actually tested at least one page
+        if state.get("pages_tested", 0) > 0:
+            return "report"
+
+        # Edge case: nothing was explored or tested (all URLs failed)
+        return "end"
+
+    async def _route_node(self, state: PipelineState) -> PipelineState:
+        """Lightweight routing node — just increments iteration counter.
+
+        LLM is only called at strategic checkpoints (e.g. mid-crawl strategy
+        adjustment), not on every iteration.
+        """
         state["iteration"] = state.get("iteration", 0) + 1
 
+        action = self._deterministic_route(state)
+        state["current_action"] = action.upper()
+
         logger.info(
-            "plan_decision",
+            "route_decision",
             task_id=self.task_id,
             action=state["current_action"],
             iteration=state["iteration"],
+            pending_urls=len(state.get("pending_urls", [])),
+            pending_test_urls=len(state.get("pending_test_urls", [])),
+            explored=len(state.get("explored_urls", [])),
+            tested=state.get("pages_tested", 0),
         )
         return state
 
     async def _explore_node(self, state: PipelineState) -> PipelineState:
-        """Crawler agent explores pages."""
+        """Crawler agent explores pages — processes up to EXPLORE_BATCH_SIZE URLs."""
         crawler = self.adaptive_crawler
+        max_pages = state.get("config", {}).get("max_pages", 100)
+        batch = 0
 
-        # Explore from current URL or first pending URL
-        url_to_explore = (
-            state["pending_urls"][0] if state["pending_urls"]
-            else state["target_url"]
-        )
+        while state["pending_urls"] and batch < self.EXPLORE_BATCH_SIZE:
+            # Stop exploring if we've hit the page limit
+            if len(state["explored_urls"]) >= max_pages:
+                logger.info("page_limit_reached", task_id=self.task_id, limit=max_pages)
+                break
 
-        try:
-            result = await crawler.explore_page(url_to_explore)
+            url_to_explore = state["pending_urls"][0]
+            batch += 1
 
-            # Update state with discovered pages
-            new_urls = [u for u in result.get("discovered_urls", []) if u not in state["explored_urls"]]
-            state["explored_urls"].append(url_to_explore)
-            state["pending_urls"] = [u for u in state["pending_urls"] if u != url_to_explore]
-            state["pending_urls"].extend(new_urls)
-            state["pending_test_urls"].append(url_to_explore)
-            state["pages_discovered"] = len(state["explored_urls"]) + len(state["pending_urls"])
+            try:
+                result = await crawler.explore_page(url_to_explore)
 
-            # Update DB
-            await self._update_task_progress(state)
+                # Update state with discovered pages
+                already_known = set(state["explored_urls"]) | set(state["pending_urls"])
+                new_urls = [u for u in result.get("discovered_urls", []) if u not in already_known]
+                state["explored_urls"].append(url_to_explore)
+                state["pending_urls"] = [u for u in state["pending_urls"] if u != url_to_explore]
+                state["pending_urls"].extend(new_urls)
+                state["pending_test_urls"].append(url_to_explore)
+                state["pages_discovered"] = len(state["explored_urls"]) + len(state["pending_urls"])
 
-        except Exception as e:
-            logger.error("explore_error", url=url_to_explore, error=str(e))
-            # Remove failed URL from pending
-            state["pending_urls"] = [u for u in state["pending_urls"] if u != url_to_explore]
+                logger.info(
+                    "explored_page",
+                    task_id=self.task_id,
+                    url=url_to_explore,
+                    new_urls_found=len(new_urls),
+                    batch_progress=f"{batch}/{self.EXPLORE_BATCH_SIZE}",
+                )
+
+                # Update DB
+                await self._update_task_progress(state)
+
+            except Exception as e:
+                logger.error("explore_error", url=url_to_explore, error=str(e))
+                # Remove failed URL from pending
+                state["pending_urls"] = [u for u in state["pending_urls"] if u != url_to_explore]
 
         return state
 
     async def _test_node(self, state: PipelineState) -> PipelineState:
-        """Detector agent tests pages for accessibility."""
+        """Detector agent tests pages — processes up to TEST_BATCH_SIZE URLs."""
         from detector.detection_engine import DetectionEngine
         from detector.ai_based.visual_analyzer import VisualAnnotator
 
-        if not state["pending_test_urls"]:
-            return state
+        batch = 0
 
-        url_to_test = state["pending_test_urls"].pop(0)
+        while state["pending_test_urls"] and batch < self.TEST_BATCH_SIZE:
+            url_to_test = state["pending_test_urls"].pop(0)
+            batch += 1
 
-        try:
-            # Get page data (uses cache from explore_node since same crawler instance)
-            page_data = await self.adaptive_crawler.get_page_data(url_to_test)
+            try:
+                # Get page data (uses cache from explore_node since same crawler instance)
+                page_data = await self.adaptive_crawler.get_page_data(url_to_test)
 
-            screenshot_path = page_data.get("screenshot_path")
-            bounding_boxes = page_data.get("bounding_boxes", [])
+                screenshot_path = page_data.get("screenshot_path")
+                bounding_boxes = page_data.get("bounding_boxes", [])
 
-            # Run rule-based detection
-            detection_engine = DetectionEngine()
-            rule_issues = await detection_engine.detect(page_data)
+                # Run rule-based detection
+                detection_engine = DetectionEngine()
+                rule_issues = await detection_engine.detect(page_data)
 
-            # Run AI detection (includes multimodal vision if screenshot available)
-            enable_vision = state["config"].get(
-                "enable_vision_detection", settings.ENABLE_VISION_DETECTION
-            )
-            ai_input = {
-                "url": url_to_test,
-                "title": page_data.get("title", ""),
-                "a11y_tree": page_data.get("a11y_tree", {}),
-                "html_snippet": page_data.get("html", "")[:5000],
-                "rule_issues": rule_issues,
-            }
-            if enable_vision and screenshot_path:
-                ai_input["screenshot_path"] = screenshot_path
-                ai_input["bounding_boxes"] = bounding_boxes
+                # Run AI detection (includes multimodal vision if screenshot available)
+                enable_vision = state["config"].get(
+                    "enable_vision_detection", settings.ENABLE_VISION_DETECTION
+                )
+                ai_input = {
+                    "url": url_to_test,
+                    "title": page_data.get("title", ""),
+                    "a11y_tree": page_data.get("a11y_tree", {}),
+                    "html_snippet": page_data.get("html", "")[:5000],
+                    "rule_issues": rule_issues,
+                }
+                if enable_vision and screenshot_path:
+                    ai_input["screenshot_path"] = screenshot_path
+                    ai_input["bounding_boxes"] = bounding_boxes
 
-            ai_result = await self.detector.run(ai_input)
+                ai_result = await self.detector.run(ai_input)
 
-            # Store issues
-            all_issues = ai_result.get("all_issues", [])
-            state["all_issues"].extend(all_issues)
-            state["issues_found"] = len(state["all_issues"])
-            state["pages_tested"] += 1
+                # Store issues
+                all_issues = ai_result.get("all_issues", [])
+                state["all_issues"].extend(all_issues)
+                state["issues_found"] = len(state["all_issues"])
+                state["pages_tested"] += 1
 
-            # Generate annotated screenshot (works for both rule-based and AI issues)
-            annotated_path = None
-            if screenshot_path and all_issues:
-                annotator = VisualAnnotator()
-                annotated_path = annotator.annotate_screenshot(
-                    screenshot_path, all_issues, bounding_boxes
+                logger.info(
+                    "tested_page",
+                    task_id=self.task_id,
+                    url=url_to_test,
+                    issues_found=len(all_issues),
+                    batch_progress=f"{batch}/{self.TEST_BATCH_SIZE}",
                 )
 
-            # Save issues to DB (with bounding box context)
-            await self._save_issues(
-                url_to_test, all_issues, bounding_boxes, annotated_path, screenshot_path
-            )
-            await self._update_task_progress(state)
+                # Generate annotated screenshot (works for both rule-based and AI issues)
+                annotated_path = None
+                if screenshot_path and all_issues:
+                    annotator = VisualAnnotator()
+                    annotated_path = annotator.annotate_screenshot(
+                        screenshot_path, all_issues, bounding_boxes
+                    )
 
-        except Exception as e:
-            logger.error("test_error", url=url_to_test, error=str(e))
+                # Save issues to DB (with bounding box context)
+                await self._save_issues(
+                    url_to_test, all_issues, bounding_boxes, annotated_path, screenshot_path
+                )
+                await self._update_task_progress(state)
+
+            except Exception as e:
+                logger.error("test_error", url=url_to_test, error=str(e))
 
         return state
 

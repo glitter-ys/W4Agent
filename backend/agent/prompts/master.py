@@ -32,19 +32,29 @@ MASTER_AGENT_SYSTEM_PROMPT = """你是 W4Agent 无障碍检测系统的主控智
 {current_state}
 """
 
-MASTER_TASK_DECOMPOSITION_PROMPT = """基于以下信息，请制定检测计划：
+MASTER_TASK_DECOMPOSITION_PROMPT = """基于以下信息，请决定下一步操作：
 
 目标URL: {target_url}
 配置: {config}
-已发现页面数: {pages_discovered}
-已检测页面数: {pages_tested}
-已发现问题数: {issues_found}
 
-请决定下一步操作：
-1. EXPLORE - 继续探索新页面
-2. TEST - 对已发现但未检测的页面进行检测
-3. REPORT - 生成检测报告
-4. COMPLETE - 检测完成
+## 当前进度
+- 已发现页面数: {pages_discovered}
+- 已检测页面数: {pages_tested}
+- 已发现问题数: {issues_found}
+- 待探索页面数: {pending_urls_count}
+- 待检测页面数: {pending_test_urls_count}
+- 最大页面数限制: {max_pages}
+
+## 决策规则
+1. **EXPLORE** - 当待探索页面数 > 0 且已发现页面数 < 最大页面数限制时，应继续探索
+2. **TEST** - 当待检测页面数 > 0 时，应对已发现但未检测的页面进行检测
+3. **REPORT** - 仅当没有待探索和待检测页面时，或已发现页面数达到上限且全部检测完毕时，才生成报告
+4. **COMPLETE** - 仅当报告已生成后选择
+
+## 重要
+- 不要在还有待探索或待检测页面时就选择 REPORT
+- 优先交替进行 EXPLORE 和 TEST，确保充分覆盖网站
+- 如果待探索页面数 > 0，优先 EXPLORE；如果待检测页面数积累较多(>=3)，先 TEST
 
 请以JSON格式回复：
 {{

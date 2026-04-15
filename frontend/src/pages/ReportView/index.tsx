@@ -33,10 +33,14 @@ import AnnotatedScreenshot from '../../components/AnnotatedScreenshot';
 
 const { Title, Paragraph, Text } = Typography;
 
+const REPORT_ISSUES_PAGE_SIZE = 20;
+
 const ReportView: React.FC = () => {
   const { taskId } = useParams<{ taskId: string }>();
   const [report, setReport] = useState<Report | null>(null);
   const [issues, setIssues] = useState<Issue[]>([]);
+  const [issuesTotal, setIssuesTotal] = useState(0);
+  const [issuesPage, setIssuesPage] = useState(1);
   const [pages, setPages] = useState<PageInfo[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -51,11 +55,12 @@ const ReportView: React.FC = () => {
       setLoading(true);
       const [reportData, issueData, pageData] = await Promise.all([
         getReportByTask(id),
-        getTaskIssues(id, { limit: 200 }),
+        getTaskIssues(id, { skip: 0, limit: REPORT_ISSUES_PAGE_SIZE }),
         getTaskPages(id, { limit: 200 }),
       ]);
       setReport(reportData);
       setIssues(issueData.items);
+      setIssuesTotal(issueData.total);
       setPages(pageData.items);
     } catch {
       message.error('加载报告失败');
@@ -227,11 +232,30 @@ const ReportView: React.FC = () => {
       )}
 
       {/* Issues Table */}
-      <Card title={`问题详情 (${issues.length})`}>
+      <Card title={`问题详情 (${issuesTotal})`}>
         <Table
           dataSource={issues}
           rowKey="id"
-          pagination={{ pageSize: 20 }}
+          scroll={{ x: 1400 }}
+          pagination={{
+            current: issuesPage,
+            pageSize: REPORT_ISSUES_PAGE_SIZE,
+            total: issuesTotal,
+            showTotal: (total) => `共 ${total} 条`,
+            showSizeChanger: false,
+          }}
+          onChange={async (pagination, filters) => {
+            const page = pagination.current || 1;
+            const severityFilter = filters.severity?.[0] as string | undefined;
+            setIssuesPage(page);
+            const data = await getTaskIssues(taskId!, {
+              skip: (page - 1) * REPORT_ISSUES_PAGE_SIZE,
+              limit: REPORT_ISSUES_PAGE_SIZE,
+              ...(severityFilter ? { severity: severityFilter } : {}),
+            });
+            setIssues(data.items);
+            setIssuesTotal(data.total);
+          }}
           columns={[
             {
               title: '严重程度',
@@ -243,7 +267,6 @@ const ReportView: React.FC = () => {
                 { text: '一般', value: 'minor' },
                 { text: '提示', value: 'info' },
               ],
-              onFilter: (value, record) => record.severity === value,
               render: (v: string) => {
                 const colors: Record<string, string> = { critical: 'red', major: 'orange', minor: 'gold', info: 'blue' };
                 const labels: Record<string, string> = { critical: '严重', major: '重要', minor: '一般', info: '提示' };
@@ -263,7 +286,21 @@ const ReportView: React.FC = () => {
             {
               title: '问题',
               dataIndex: 'title',
+              width: 200,
               ellipsis: true,
+            },
+            {
+              title: '描述',
+              dataIndex: 'description',
+              ellipsis: true,
+              width: 300,
+            },
+            {
+              title: '页面网址',
+              dataIndex: 'page_url',
+              ellipsis: true,
+              width: 200,
+              render: (v: string | null) => v ? <a href={v} target="_blank" rel="noopener noreferrer">{v}</a> : '-',
             },
             {
               title: '建议',

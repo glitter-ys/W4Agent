@@ -51,10 +51,13 @@ const severityLabels: Record<string, string> = {
   info: '提示',
 };
 
+const ISSUES_PAGE_SIZE = 20;
+
 const TaskDetail: React.FC = () => {
   const { taskId } = useParams<{ taskId: string }>();
   const navigate = useNavigate();
   const [pages, setPages] = useState<PageInfo[]>([]);
+  const [issuesPage, setIssuesPage] = useState(1);
   const {
     currentTask,
     taskProgress,
@@ -96,7 +99,8 @@ const TaskDetail: React.FC = () => {
         case 'task_completed':
         case 'task_failed':
           fetchTask(taskId!);
-          fetchIssues(taskId!);
+          setIssuesPage(1);
+          fetchIssues(taskId!, { skip: 0, limit: ISSUES_PAGE_SIZE });
           // Reload pages so screenshot tab picks up newly saved screenshots
           getTaskPages(taskId!, { limit: 200 }).then((data) => {
             setPages(data.items);
@@ -111,7 +115,7 @@ const TaskDetail: React.FC = () => {
   useEffect(() => {
     if (taskId) {
       fetchTask(taskId);
-      fetchIssues(taskId);
+      fetchIssues(taskId, { skip: 0, limit: ISSUES_PAGE_SIZE });
       clearLogs();
 
       // Load pages for screenshot tab
@@ -291,7 +295,20 @@ const TaskDetail: React.FC = () => {
                   columns={issueColumns}
                   dataSource={issues}
                   rowKey="id"
-                  pagination={{ pageSize: 20, total: issuesTotal }}
+                  pagination={{
+                    current: issuesPage,
+                    pageSize: ISSUES_PAGE_SIZE,
+                    total: issuesTotal,
+                    showTotal: (total) => `共 ${total} 条`,
+                    showSizeChanger: false,
+                    onChange: (page) => {
+                      setIssuesPage(page);
+                      fetchIssues(taskId!, {
+                        skip: (page - 1) * ISSUES_PAGE_SIZE,
+                        limit: ISSUES_PAGE_SIZE,
+                      });
+                    },
+                  }}
                   size="small"
                 />
               ),

@@ -81,21 +81,60 @@ class ReportService:
         return report
 
     @staticmethod
+    async def _load_issues_for_export(task_id: str) -> list[dict]:
+        """Load all issues with page URLs for export."""
+        from sqlalchemy import select
+        from app.db.session import async_session_factory
+        from app.models.issue import Issue
+        from app.models.page import Page
+
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(Issue).where(Issue.task_id == task_id).order_by(Issue.created_at)
+            )
+            items = result.scalars().all()
+
+            # Collect page URLs
+            page_ids = {item.page_id for item in items}
+            page_url_map: dict = {}
+            if page_ids:
+                page_result = await db.execute(
+                    select(Page.id, Page.url).where(Page.id.in_(page_ids))
+                )
+                page_url_map = {row.id: row.url for row in page_result.all()}
+
+            return [
+                {
+                    "severity": item.severity.value if hasattr(item.severity, 'value') else item.severity,
+                    "wcag_criterion": item.wcag_criterion,
+                    "wcag_level": item.wcag_level.value if hasattr(item.wcag_level, 'value') else item.wcag_level,
+                    "title": item.title,
+                    "description": item.description,
+                    "recommendation": item.recommendation or "",
+                    "detected_by": item.detected_by,
+                    "page_url": page_url_map.get(item.page_id, ""),
+                }
+                for item in items
+            ]
+
+    @staticmethod
     async def export_report(report: Report, format: str) -> str:
         """Export report in the specified format. Returns file path."""
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
+        issues = await ReportService._load_issues_for_export(str(report.task_id))
+
         if format == "json":
-            return await ReportService._export_json(report)
+            return await ReportService._export_json(report, issues)
         elif format == "html":
-            return await ReportService._export_html(report)
+            return await ReportService._export_html(report, issues)
         elif format == "pdf":
-            return await ReportService._export_pdf(report)
+            return await ReportService._export_pdf(report, issues)
         else:
             raise ValueError(f"Unsupported format: {format}")
 
     @staticmethod
-    async def _export_json(report: Report) -> str:
+    async def _export_json(report: Report, issues: list[dict]) -> str:
         file_path = REPORTS_DIR / f"report_{report.task_id}.json"
         data = {
             "task_id": str(report.task_id),
@@ -108,32 +147,33 @@ class ReportService:
             "summary": report.summary,
             "recommendations": report.recommendations,
             "issue_breakdown": report.issue_breakdown,
+            "issues": issues,
         }
         file_path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
         return str(file_path)
 
     @staticmethod
-    async def _export_html(report: Report) -> str:
+    async def _export_html(report: Report, issues: list[dict]) -> str:
         from jinja2 import Template
 
         template = Template(REPORT_HTML_TEMPLATE)
-        html_content = template.render(report=report)
+        html_content = template.render(report=report, issues=issues)
 
         file_path = REPORTS_DIR / f"report_{report.task_id}.html"
         file_path.write_text(html_content, encoding="utf-8")
         return str(file_path)
 
     @staticmethod
-    async def _export_pdf(report: Report) -> str:
+    async def _export_pdf(report: Report, issues: list[dict]) -> str:
         # First generate HTML, then convert to PDF
-        html_path = await ReportService._export_html(report)
+        html_path = await ReportService._export_html(report, issues)
         pdf_path = REPORTS_DIR / f"report_{report.task_id}.pdf"
 
         try:
             from weasyprint import HTML
             HTML(filename=html_path).write_pdf(str(pdf_path))
-        except ImportError:
-            logger.warning("weasyprint_not_installed", msg="Falling back to HTML")
+        except (ImportError, OSError) as e:
+            logger.warning("weasyprint_unavailable", msg=f"Falling back to HTML: {e}")
             return html_path
 
         return str(pdf_path)
@@ -145,19 +185,32 @@ REPORT_HTML_TEMPLATE = """<!DOCTYPE html>
     <meta charset="UTF-8">
     <title>无障碍检测报告</title>
     <style>
-        body { font-family: 'Microsoft YaHei', sans-serif; margin: 40px; color: #333; }
-        .header { text-align: center; border-bottom: 2px solid #1890ff; padding-bottom: 20px; }
-        .score { font-size: 48px; font-weight: bold; color: {% if report.overall_score >= 80 %}#52c41a{% elif report.overall_score >= 60 %}#faad14{% else %}#f5222d{% endif %}; }
-        .stats { display: flex; gap: 20px; margin: 20px 0; }
-        .stat-card { flex: 1; padding: 15px; border: 1px solid #d9d9d9; border-radius: 8px; text-align: center; }
-        .stat-value { font-size: 24px; font-weight: bold; }
+        @page { size: A4 landscape; margin: 15mm; }
+        body { font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; margin: 0; color: #333; font-size: 9px; line-height: 1.4; }
+        h1 { font-size: 18px; margin: 0 0 4px 0; }
+        h2 { font-size: 12px; margin: 0; }
+        p { margin: 4px 0; font-size: 9px; }
+        .header { text-align: center; border-bottom: 2px solid #1890ff; padding-bottom: 10px; margin-bottom: 10px; }
+        .header p { color: #666; }
+        .score { font-size: 32px; font-weight: bold; margin: 6px 0; color: {% if report.overall_score >= 80 %}#52c41a{% elif report.overall_score >= 60 %}#faad14{% else %}#f5222d{% endif %}; }
+        .stats { display: flex; gap: 10px; margin: 10px 0; }
+        .stat-card { flex: 1; padding: 8px; border: 1px solid #d9d9d9; border-radius: 6px; text-align: center; }
+        .stat-value { font-size: 18px; font-weight: bold; }
+        .stat-card div:last-child { font-size: 8px; color: #666; margin-top: 2px; }
         .critical { color: #f5222d; }
         .major { color: #fa8c16; }
         .minor { color: #faad14; }
-        table { width: 100%; border-collapse: collapse; margin: 20px 0; }
-        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #e8e8e8; }
-        th { background: #fafafa; font-weight: bold; }
-        .footer { text-align: center; color: #999; margin-top: 40px; font-size: 12px; }
+        .section-title { font-size: 11px; margin-top: 14px; padding-bottom: 4px; border-bottom: 1px solid #d9d9d9; }
+        table { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 8px; }
+        th, td { padding: 4px 5px; text-align: left; border: 1px solid #ddd; word-break: break-all; }
+        th { background: #f5f5f5; font-weight: bold; font-size: 8px; }
+        tr:nth-child(even) { background: #fafafa; }
+        .severity-critical { background: #fff1f0; color: #cf1322; font-weight: bold; }
+        .severity-major { background: #fff7e6; color: #d46b08; font-weight: bold; }
+        .severity-minor { background: #fffbe6; color: #d4b106; }
+        .severity-info { background: #e6f7ff; color: #096dd9; }
+        .page-url { color: #1890ff; font-size: 7px; }
+        .footer { text-align: center; color: #999; margin-top: 16px; font-size: 8px; }
     </style>
 </head>
 <body>
@@ -187,13 +240,49 @@ REPORT_HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
 
     {% if report.summary %}
-    <h2>检测摘要</h2>
+    <h2 class="section-title">检测摘要</h2>
     <p>{{ report.summary }}</p>
     {% endif %}
 
     {% if report.recommendations %}
-    <h2>改进建议</h2>
+    <h2 class="section-title">改进建议</h2>
     <p>{{ report.recommendations }}</p>
+    {% endif %}
+
+    <h2 class="section-title">问题详情 ({{ issues|length }})</h2>
+    {% if issues %}
+    <table>
+        <thead>
+            <tr>
+                <th style="width:45px">严重程度</th>
+                <th style="width:55px">WCAG准则</th>
+                <th style="width:30px">级别</th>
+                <th style="width:120px">问题标题</th>
+                <th>描述</th>
+                <th style="width:100px">页面网址</th>
+                <th>建议</th>
+                <th style="width:35px">来源</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for issue in issues %}
+            <tr>
+                <td class="severity-{{ issue.severity }}">
+                    {% if issue.severity == 'critical' %}严重{% elif issue.severity == 'major' %}重要{% elif issue.severity == 'minor' %}一般{% else %}提示{% endif %}
+                </td>
+                <td>{{ issue.wcag_criterion }}</td>
+                <td>{{ issue.wcag_level }}</td>
+                <td>{{ issue.title }}</td>
+                <td>{{ issue.description }}</td>
+                <td class="page-url">{{ issue.page_url }}</td>
+                <td>{{ issue.recommendation }}</td>
+                <td>{% if issue.detected_by == 'vision_ai' %}视觉AI{% elif issue.detected_by == 'ai' %}AI{% else %}规则{% endif %}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>暂无检测问题</p>
     {% endif %}
 
     <div class="footer">

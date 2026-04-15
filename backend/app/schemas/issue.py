@@ -28,6 +28,7 @@ class IssueResponse(BaseModel):
     context: dict | None = None
     jira_issue_key: str | None
     created_at: datetime
+    page_url: str | None = None
 
     model_config = {"from_attributes": True}
 

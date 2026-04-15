@@ -19,7 +19,7 @@ interface TaskState {
   startTask: (id: string) => Promise<void>;
   stopTask: (id: string) => Promise<void>;
   removeTask: (id: string) => Promise<void>;
-  fetchIssues: (taskId: string, params?: { severity?: string; status?: string }) => Promise<void>;
+  fetchIssues: (taskId: string, params?: { severity?: string; status?: string; skip?: number; limit?: number }) => Promise<void>;
   updateProgress: (progress: TaskProgress) => void;
   addAgentLog: (log: { agent: string; reasoning: string; timestamp: string }) => void;
   clearLogs: () => void;

@@ -10,6 +10,7 @@ from app.dependencies import get_db
 from app.core.security import get_current_user
 from app.core.exceptions import NotFoundException
 from app.models.issue import Issue
+from app.models.page import Page
 from app.schemas.issue import IssueResponse, IssueUpdate, IssueListResponse
 
 router = APIRouter(prefix="/issues", tags=["issues"])
@@ -49,7 +50,23 @@ async def list_issues(
         query.order_by(Issue.created_at.desc()).offset(skip).limit(limit)
     )
     items = result.scalars().all()
-    return IssueListResponse(items=items, total=total)
+
+    # Collect page URLs for the issues
+    page_ids = {item.page_id for item in items}
+    page_url_map: dict = {}
+    if page_ids:
+        page_result = await db.execute(
+            select(Page.id, Page.url).where(Page.id.in_(page_ids))
+        )
+        page_url_map = {row.id: row.url for row in page_result.all()}
+
+    response_items = []
+    for item in items:
+        issue_dict = IssueResponse.model_validate(item).model_dump()
+        issue_dict["page_url"] = page_url_map.get(item.page_id)
+        response_items.append(IssueResponse(**issue_dict))
+
+    return IssueListResponse(items=response_items, total=total)
 
 
 @router.get("/{issue_id}", response_model=IssueResponse)

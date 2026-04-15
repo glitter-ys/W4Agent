@@ -24,6 +24,7 @@ export interface Issue {
     [key: string]: unknown;
   } | null;
   jira_issue_key: string | null;
+  page_url: string | null;
   created_at: string;
 }
 

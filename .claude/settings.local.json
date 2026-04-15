@@ -25,7 +25,9 @@
       "Bash(lsof:*)",
       "Bash(ps:*)",
       "Bash(kill 35282 35283 35284)",
-      "Bash(kill 35523)"
+      "Bash(kill 35523)",
+      "Bash(pip show:*)",
+      "Bash(brew install:*)"
     ]
   }
 }

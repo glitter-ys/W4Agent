@@ -50,6 +50,9 @@ class MasterAgent(BaseAgent):
             pages_discovered=input_data.get("pages_discovered", 0),
             pages_tested=input_data.get("pages_tested", 0),
             issues_found=input_data.get("issues_found", 0),
+            pending_urls_count=input_data.get("pending_urls_count", 0),
+            pending_test_urls_count=input_data.get("pending_test_urls_count", 0),
+            max_pages=input_data.get("max_pages", 100),
         )
 
     async def decide_next_action(
@@ -59,6 +62,9 @@ class MasterAgent(BaseAgent):
         pages_discovered: int,
         pages_tested: int,
         issues_found: int,
+        pending_urls_count: int = 0,
+        pending_test_urls_count: int = 0,
+        max_pages: int = 100,
     ) -> dict[str, Any]:
         """Use LLM to decide the next action in the detection pipeline."""
         prompt = MASTER_TASK_DECOMPOSITION_PROMPT.format(
@@ -67,6 +73,9 @@ class MasterAgent(BaseAgent):
             pages_discovered=pages_discovered,
             pages_tested=pages_tested,
             issues_found=issues_found,
+            pending_urls_count=pending_urls_count,
+            pending_test_urls_count=pending_test_urls_count,
+            max_pages=max_pages,
         )
 
         messages = [
