@@ -13,7 +13,19 @@
       "Bash(pip3 install:*)",
       "Bash(rm -f /Users/guangzhi/.matplotlib/fontlist-*.json)",
       "Read(//Users/guangzhi/.matplotlib/**)",
-      "Bash(find /Users/guangzhi/Desktop/W4Agent -type f -name test_* -o -name *_test.* -o -name *.test.* -o -name *.spec.*)"
+      "Bash(find /Users/guangzhi/Desktop/W4Agent -type f -name test_* -o -name *_test.* -o -name *.test.* -o -name *.spec.*)",
+      "Bash(find /Users/guangzhi/Desktop/W4Agent -name *test* -o -name *spec*)",
+      "Bash(python:*)",
+      "Bash(npx tsc:*)",
+      "Bash(pg_isready)",
+      "Bash(docker ps:*)",
+      "Bash(ls docker-compose*.yml compose*.yml)",
+      "Bash(docker-compose ps:*)",
+      "Bash(ls:*)",
+      "Bash(lsof:*)",
+      "Bash(ps:*)",
+      "Bash(kill 35282 35283 35284)",
+      "Bash(kill 35523)"
     ]
   }
 }

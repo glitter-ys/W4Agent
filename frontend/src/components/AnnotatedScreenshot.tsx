@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Image, Switch, Tooltip, Typography, Tag, Space } from 'antd';
-import { getScreenshotUrl } from '../api/screenshots';
+import { Image, Switch, Tooltip, Typography, Tag, Space, Button, message } from 'antd';
+import { DownloadOutlined } from '@ant-design/icons';
+import { getScreenshotUrl, downloadPageScreenshot } from '../api/screenshots';
 import type { Issue, PageInfo } from '../types/a11y';
 
 const { Text } = Typography;
@@ -31,12 +32,25 @@ const AnnotatedScreenshot: React.FC<AnnotatedScreenshotProps> = ({
   onIssueClick,
 }) => {
   const [showAnnotated, setShowAnnotated] = useState(true);
+  const [downloading, setDownloading] = useState(false);
 
   const originalUrl = getScreenshotUrl(page.screenshot_path);
   const annotatedUrl = getScreenshotUrl(page.annotated_screenshot_path);
   const hasAnnotated = !!annotatedUrl;
 
   const currentUrl = showAnnotated && hasAnnotated ? annotatedUrl : originalUrl;
+
+  const handleDownload = async () => {
+    try {
+      setDownloading(true);
+      await downloadPageScreenshot(page.id, showAnnotated && hasAnnotated);
+      message.success('截图下载成功');
+    } catch {
+      message.error('截图下载失败');
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   if (!currentUrl) {
     return <Text type="secondary">暂无截图</Text>;
@@ -61,6 +75,15 @@ const AnnotatedScreenshot: React.FC<AnnotatedScreenshotProps> = ({
               size="small"
             />
           )}
+          <Button
+            type="link"
+            size="small"
+            icon={<DownloadOutlined />}
+            loading={downloading}
+            onClick={handleDownload}
+          >
+            下载截图
+          </Button>
         </Space>
         <div>
           <Text type="secondary" style={{ fontSize: 12 }}>{page.url}</Text>

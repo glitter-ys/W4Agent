@@ -22,9 +22,11 @@ import {
   FileExcelOutlined,
   CloseCircleOutlined,
   ExclamationCircleOutlined,
+  PictureOutlined,
 } from '@ant-design/icons';
 import { getReportByTask, exportReport } from '../../api/reports';
 import { getTaskIssues, getTaskPages } from '../../api/tasks';
+import { downloadTaskScreenshots } from '../../api/screenshots';
 import type { Report } from '../../types/report';
 import type { Issue, PageInfo } from '../../types/a11y';
 import AnnotatedScreenshot from '../../components/AnnotatedScreenshot';
@@ -120,6 +122,16 @@ const ReportView: React.FC = () => {
               </Button>
               <Button icon={<FileExcelOutlined />} onClick={() => handleExport('json')}>
                 导出JSON
+              </Button>
+              <Button icon={<PictureOutlined />} onClick={async () => {
+                try {
+                  await downloadTaskScreenshots(taskId!);
+                  message.success('截图打包下载成功');
+                } catch {
+                  message.error('截图下载失败');
+                }
+              }}>
+                下载截图
               </Button>
             </Space>
           </Col>

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "vibe-coding-standard-workflow": {
+      "source": "WoodyXu/vibe-coding-standard-workflow",
+      "sourceType": "github",
+      "computedHash": "4446cb89adc08f8c8a6e72e795aaec1db85d538e2291a12033a62de89a4ca310"
+    }
+  }
+}

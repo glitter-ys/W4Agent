@@ -24,10 +24,12 @@ import {
   FileTextOutlined,
   BugOutlined,
   PictureOutlined,
+  DownloadOutlined,
 } from '@ant-design/icons';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { TaskWebSocket } from '../../api/ws';
 import { getTaskPages } from '../../api/tasks';
+import { downloadTaskScreenshots } from '../../api/screenshots';
 import type { WSMessage } from '../../types/ws';
 import type { PageInfo } from '../../types/a11y';
 import AnnotatedScreenshot from '../../components/AnnotatedScreenshot';
@@ -327,26 +329,42 @@ const TaskDetail: React.FC = () => {
                   页面截图
                 </span>
               ),
-              children: (
-                <div>
-                  {pages.filter(p => p.screenshot_path).length > 0 ? (
-                    <Space direction="vertical" size="large" style={{ width: '100%' }}>
-                      {pages
-                        .filter(p => p.screenshot_path)
-                        .map(page => (
-                          <Card key={page.id} type="inner" size="small">
-                            <AnnotatedScreenshot
-                              page={page}
-                              issues={issues}
-                            />
-                          </Card>
-                        ))}
-                    </Space>
-                  ) : (
-                    <Empty description="暂无页面截图" />
-                  )}
-                </div>
-              ),
+              children: (() => {
+                const screenshotPages = pages.filter(p => p.screenshot_path);
+                const handleDownloadAll = async () => {
+                  try {
+                    await downloadTaskScreenshots(taskId!);
+                    message.success('截图打包下载成功');
+                  } catch {
+                    message.error('截图下载失败');
+                  }
+                };
+                return (
+                  <div>
+                    {screenshotPages.length > 0 ? (
+                      <>
+                        <div style={{ marginBottom: 16 }}>
+                          <Button icon={<DownloadOutlined />} onClick={handleDownloadAll}>
+                            下载全部截图
+                          </Button>
+                        </div>
+                        <Space direction="vertical" size="large" style={{ width: '100%' }}>
+                          {screenshotPages.map(page => (
+                            <Card key={page.id} type="inner" size="small">
+                              <AnnotatedScreenshot
+                                page={page}
+                                issues={issues}
+                              />
+                            </Card>
+                          ))}
+                        </Space>
+                      </>
+                    ) : (
+                      <Empty description="暂无页面截图" />
+                    )}
+                  </div>
+                );
+              })(),
             },
             {
               key: 'config',

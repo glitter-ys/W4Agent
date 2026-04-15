@@ -56,6 +56,15 @@ class PageAnalyzer:
             "html": page_data.get("html", ""),
             "lang": page_data.get("lang", ""),
             "bounding_boxes": bounding_boxes,
+            # AA-relevant data
+            "viewport_meta": page_data.get("viewport_meta", ""),
+            "tabindex_elements": page_data.get("tabindex_elements", []),
+            "autocomplete_inputs": page_data.get("autocomplete_inputs", []),
+            "text_samples": page_data.get("text_samples", []),
+            "focus_styles": page_data.get("focus_styles", []),
+            "lang_parts": page_data.get("lang_parts", []),
+            "aria_live_regions": page_data.get("aria_live_regions", []),
+            "duplicate_ids": page_data.get("duplicate_ids", []),
         }
 
     async def _get_a11y_tree(self, page: Page) -> dict | None:
@@ -147,7 +156,108 @@ class PageAnalyzer:
                 // Page HTML (truncated)
                 const html = document.documentElement.outerHTML.slice(0, 50000);
 
-                return { headings, images, forms, links, interactive_elements: interactive, landmarks, lang, html };
+                // --- AA-relevant data ---
+
+                // Viewport meta tag
+                const viewportEl = document.querySelector('meta[name="viewport"]');
+                const viewport_meta = viewportEl ? viewportEl.getAttribute('content') || '' : '';
+
+                // Elements with tabindex (check for positive tabindex anti-pattern)
+                const tabindex_elements = Array.from(document.querySelectorAll('[tabindex]'))
+                    .slice(0, 100)
+                    .map(el => ({
+                        tag: el.tagName.toLowerCase(),
+                        tabindex: parseInt(el.getAttribute('tabindex'), 10),
+                        text: (el.textContent || '').trim().slice(0, 60),
+                        role: el.getAttribute('role'),
+                    }));
+
+                // Inputs that should have autocomplete (personal data fields)
+                const autocompleteTags = 'input[type="text"], input[type="email"], input[type="tel"], input[type="url"], input[type="password"], input[type="search"]';
+                const autocomplete_inputs = Array.from(document.querySelectorAll(autocompleteTags))
+                    .slice(0, 50)
+                    .map(input => ({
+                        tag: input.tagName.toLowerCase(),
+                        type: input.type,
+                        name: input.name,
+                        id: input.id,
+                        autocomplete: input.getAttribute('autocomplete') || '',
+                        aria_label: input.getAttribute('aria-label'),
+                        placeholder: input.placeholder,
+                    }));
+
+                // Sample text elements for contrast / spacing checks
+                const textTags = 'p, span, li, td, th, label, a, h1, h2, h3, h4, h5, h6, div, button';
+                const text_samples = Array.from(document.querySelectorAll(textTags))
+                    .filter(el => el.textContent.trim().length > 0)
+                    .slice(0, 60)
+                    .map(el => {
+                        const style = window.getComputedStyle(el);
+                        return {
+                            tag: el.tagName.toLowerCase(),
+                            text: el.textContent.trim().slice(0, 80),
+                            color: style.color,
+                            background_color: style.backgroundColor,
+                            font_size: style.fontSize,
+                            font_weight: style.fontWeight,
+                            line_height: style.lineHeight,
+                            letter_spacing: style.letterSpacing,
+                            selector: el.id ? el.tagName.toLowerCase() + '#' + el.id : el.tagName.toLowerCase(),
+                        };
+                    });
+
+                // Focus styles: check if interactive elements have visible focus indicators
+                const focusCheckElements = Array.from(document.querySelectorAll(
+                    'a, button, input, select, textarea, [tabindex="0"], [role="button"]'
+                )).slice(0, 30);
+                const focus_styles = focusCheckElements.map(el => {
+                    const style = window.getComputedStyle(el);
+                    return {
+                        tag: el.tagName.toLowerCase(),
+                        text: (el.textContent || '').trim().slice(0, 60),
+                        outline_style: style.outlineStyle,
+                        outline_width: style.outlineWidth,
+                        outline_color: style.outlineColor,
+                        has_outline_none: style.outlineStyle === 'none' && style.outlineWidth === '0px',
+                    };
+                });
+
+                // Elements with lang attribute (language of parts)
+                const lang_parts = Array.from(document.querySelectorAll('[lang]'))
+                    .filter(el => el !== document.documentElement)
+                    .slice(0, 50)
+                    .map(el => ({
+                        tag: el.tagName.toLowerCase(),
+                        lang: el.getAttribute('lang'),
+                        text: el.textContent.trim().slice(0, 80),
+                    }));
+
+                // ARIA live regions (for status messages check)
+                const aria_live_regions = Array.from(document.querySelectorAll(
+                    '[aria-live], [role="alert"], [role="status"], [role="log"], [role="marquee"], [role="timer"]'
+                )).slice(0, 20).map(el => ({
+                    tag: el.tagName.toLowerCase(),
+                    role: el.getAttribute('role'),
+                    aria_live: el.getAttribute('aria-live'),
+                    text: el.textContent.trim().slice(0, 100),
+                }));
+
+                // Duplicate IDs (violates WCAG 4.1.1)
+                const allIds = Array.from(document.querySelectorAll('[id]')).map(el => el.id);
+                const idCounts = {};
+                allIds.forEach(id => { idCounts[id] = (idCounts[id] || 0) + 1; });
+                const duplicate_ids = Object.entries(idCounts)
+                    .filter(([_, count]) => count > 1)
+                    .slice(0, 30)
+                    .map(([id, count]) => ({ id, count }));
+
+                return {
+                    headings, images, forms, links,
+                    interactive_elements: interactive, landmarks, lang, html,
+                    viewport_meta, tabindex_elements, autocomplete_inputs,
+                    text_samples, focus_styles, lang_parts,
+                    aria_live_regions, duplicate_ids,
+                };
             }""")
             return data
         except Exception as e:
