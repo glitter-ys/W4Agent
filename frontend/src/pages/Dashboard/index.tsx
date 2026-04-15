@@ -1,11 +1,12 @@
 import React, { useEffect } from 'react';
-import { Card, Row, Col, Statistic, Table, Tag, Button, Space } from 'antd';
+import { Card, Row, Col, Statistic, Table, Tag, Button, Space, Popconfirm, message } from 'antd';
 import {
   ScanOutlined,
   BugOutlined,
   FileTextOutlined,
   CheckCircleOutlined,
   PlusOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useTaskStore } from '../../stores/useTaskStore';
@@ -31,7 +32,7 @@ const statusLabels: Record<string, string> = {
 
 const Dashboard: React.FC = () => {
   const navigate = useNavigate();
-  const { tasks, total, fetchTasks, loading } = useTaskStore();
+  const { tasks, total, fetchTasks, removeTask, loading } = useTaskStore();
   const { fetchProjects } = useProjectStore();
 
   useEffect(() => {
@@ -100,6 +101,28 @@ const Dashboard: React.FC = () => {
             <Button type="link" size="small" onClick={() => navigate(`/reports/${record.id}`)}>
               报告
             </Button>
+          )}
+          {record.status !== 'running' && (
+            <Popconfirm
+              title="确定要删除此任务吗？"
+              description="删除后将无法恢复，相关的检测数据和报告也会一并删除。"
+              onConfirm={async () => {
+                try {
+                  await removeTask(record.id);
+                  message.success('任务已删除');
+                  fetchTasks();
+                } catch {
+                  message.error('删除失败');
+                }
+              }}
+              okText="删除"
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
+            >
+              <Button type="link" size="small" danger icon={<DeleteOutlined />}>
+                删除
+              </Button>
+            </Popconfirm>
           )}
         </Space>
       ),

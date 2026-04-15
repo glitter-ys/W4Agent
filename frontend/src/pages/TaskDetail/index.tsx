@@ -17,6 +17,7 @@ import {
   Statistic,
   Empty,
   message,
+  Popconfirm,
 } from 'antd';
 import {
   PlayCircleOutlined,
@@ -25,6 +26,7 @@ import {
   BugOutlined,
   PictureOutlined,
   DownloadOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { TaskWebSocket } from '../../api/ws';
@@ -67,6 +69,7 @@ const TaskDetail: React.FC = () => {
     fetchTask,
     startTask,
     stopTask,
+    removeTask,
     fetchIssues,
     updateProgress,
     addAgentLog,
@@ -164,6 +167,16 @@ const TaskDetail: React.FC = () => {
     }
   };
 
+  const handleDelete = async () => {
+    try {
+      await removeTask(task.id);
+      message.success('任务已删除');
+      navigate('/');
+    } catch {
+      message.error('删除失败');
+    }
+  };
+
   const issueColumns = [
     {
       title: '严重程度',
@@ -254,6 +267,20 @@ const TaskDetail: React.FC = () => {
                 >
                   查看报告
                 </Button>
+              )}
+              {!isRunning && (
+                <Popconfirm
+                  title="确定要删除此任务吗？"
+                  description="删除后将无法恢复，相关的检测数据和报告也会一并删除。"
+                  onConfirm={handleDelete}
+                  okText="删除"
+                  cancelText="取消"
+                  okButtonProps={{ danger: true }}
+                >
+                  <Button danger icon={<DeleteOutlined />}>
+                    删除任务
+                  </Button>
+                </Popconfirm>
               )}
             </Space>
           </Col>
