@@ -15,6 +15,7 @@ from agent.llm.provider import get_llm
 from agent.memory.short_term import ShortTermMemory
 from agent.memory.long_term import LongTermMemory
 from app.config import settings
+from app.services.notification_service import NotificationService
 from crawler.adaptive_crawler import AdaptiveCrawler
 
 logger = structlog.get_logger()
@@ -194,6 +195,18 @@ class Orchestrator:
             explored=len(state.get("explored_urls", [])),
             tested=state.get("pages_tested", 0),
         )
+
+        await NotificationService.notify_agent_reasoning(
+            task_id=self.task_id,
+            agent_name="Master",
+            reasoning=f"第{state['iteration']}轮调度决策: {state['current_action']} | "
+                      f"已探索{len(state.get('explored_urls', []))}页, "
+                      f"已检测{state.get('pages_tested', 0)}页, "
+                      f"待探索{len(state.get('pending_urls', []))}个URL, "
+                      f"待检测{len(state.get('pending_test_urls', []))}个URL, "
+                      f"发现{state.get('issues_found', 0)}个问题",
+        )
+
         return state
 
     async def _explore_node(self, state: PipelineState) -> PipelineState:
@@ -229,6 +242,14 @@ class Orchestrator:
                     url=url_to_explore,
                     new_urls_found=len(new_urls),
                     batch_progress=f"{batch}/{self.EXPLORE_BATCH_SIZE}",
+                )
+
+                await NotificationService.notify_agent_reasoning(
+                    task_id=self.task_id,
+                    agent_name="Crawler",
+                    reasoning=f"探索页面: {url_to_explore} | "
+                              f"发现{len(new_urls)}个新URL, "
+                              f"批次进度 {batch}/{self.EXPLORE_BATCH_SIZE}",
                 )
 
                 # Update DB
@@ -294,6 +315,16 @@ class Orchestrator:
                     batch_progress=f"{batch}/{self.TEST_BATCH_SIZE}",
                 )
 
+                await NotificationService.notify_agent_reasoning(
+                    task_id=self.task_id,
+                    agent_name="Detector",
+                    reasoning=f"检测页面: {url_to_test} | "
+                              f"发现{len(all_issues)}个无障碍问题 "
+                              f"(规则{len(rule_issues)}个, AI{len(ai_result.get('ai_issues', []))}个, "
+                              f"视觉{len(ai_result.get('vision_issues', []))}个), "
+                              f"批次进度 {batch}/{self.TEST_BATCH_SIZE}",
+                )
+
                 # Generate annotated screenshot (works for both rule-based and AI issues)
                 annotated_path = None
                 if screenshot_path and all_issues:
@@ -351,6 +382,16 @@ class Orchestrator:
             "summary": report_result.get("summary", ""),
             "recommendations": report_result.get("recommendations", []),
         }
+
+        await NotificationService.notify_agent_reasoning(
+            task_id=self.task_id,
+            agent_name="Reporter",
+            reasoning=f"生成检测报告 | 综合评分: {round(overall_score, 1)}, "
+                      f"共检测{total_pages}个页面, 发现{total_issues}个问题 "
+                      f"(严重{severity_counts['critical']}个, "
+                      f"重要{severity_counts['major']}个, "
+                      f"轻微{severity_counts['minor']}个)",
+        )
 
         # Save report to DB
         await self._save_report(state)
