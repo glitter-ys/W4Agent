@@ -27,7 +27,15 @@
       "Bash(kill 35282 35283 35284)",
       "Bash(kill 35523)",
       "Bash(pip show:*)",
-      "Bash(brew install:*)"
+      "Bash(brew install:*)",
+      "Bash(PYTHONPATH=backend python3 -c \"from detector.rule_based.wcag_rules import *; from detector.rule_based.rule_registry import registry; rules = registry.get_rules\\('AAA'\\); print\\(f'Total rules registered: {len\\(rules\\)}'\\); print\\('Rule IDs:'\\); [print\\(f'  - {r.rule_id} \\({r.wcag_level}\\)'\\) for r in rules]\")",
+      "Bash(PYTHONPATH=backend python3 -c \"from detector.rule_based.wcag_rules import *; from detector.rule_based.rule_registry import registry; rules = registry.get_rules\\('AAA'\\); print\\(f'Total rules: {len\\(rules\\)}'\\); assert not any\\(r.rule_id == 'focus-visible' for r in rules\\), 'focus-visible still present!'; print\\('focus-visible rule removed successfully'\\)\")",
+      "Bash(PYTHONPATH=backend python3 -c \"from detector.rule_based.wcag_rules import *; print\\('OK'\\)\")",
+      "WebFetch(domain:glitter-ys.github.io)",
+      "Bash(textutil -stdout -cat txt \"/Users/guangzhi/Desktop/W4Agent/docs/毕业设计任务书.doc\")",
+      "Bash(antiword \"/Users/guangzhi/Desktop/W4Agent/docs/毕业设计任务书.doc\")",
+      "Bash(catdoc \"/Users/guangzhi/Desktop/W4Agent/docs/毕业设计任务书.doc\")",
+      "Bash(find backend:*)"
     ]
   }
 }

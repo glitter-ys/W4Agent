@@ -326,21 +326,26 @@ class Orchestrator:
                 )
 
                 # Generate annotated screenshot (works for both rule-based and AI issues)
+                # This is best-effort and should not block issue saving
                 annotated_path = None
                 if screenshot_path and all_issues:
-                    annotator = VisualAnnotator()
-                    annotated_path = annotator.annotate_screenshot(
-                        screenshot_path, all_issues, bounding_boxes
-                    )
+                    try:
+                        annotator = VisualAnnotator()
+                        annotated_path = annotator.annotate_screenshot(
+                            screenshot_path, all_issues, bounding_boxes
+                        )
+                    except Exception as e:
+                        logger.warning("annotate_screenshot_error", url=url_to_test, error=str(e))
 
                 # Save issues to DB (with bounding box context)
+                # This is critical and should not be silently swallowed
                 await self._save_issues(
                     url_to_test, all_issues, bounding_boxes, annotated_path, screenshot_path
                 )
                 await self._update_task_progress(state)
 
             except Exception as e:
-                logger.error("test_error", url=url_to_test, error=str(e))
+                logger.error("test_error", url=url_to_test, error=str(e), exc_info=True)
 
         return state
 
@@ -357,11 +362,15 @@ class Orchestrator:
             sev = issue.get("severity", "minor")
             severity_counts[sev] = severity_counts.get(sev, 0) + 1
 
-        # Calculate score
+        # Calculate score using severity-weighted formula
         total_pages = state["pages_tested"]
         total_issues = state["issues_found"]
+        critical = severity_counts["critical"]
+        major = severity_counts["major"]
+        minor = severity_counts["minor"]
         if total_pages > 0:
-            overall_score = max(0, 100 - (total_issues / total_pages * 10))
+            weighted_deduction = (critical * 10 + major * 5 + minor * 2) / total_pages
+            overall_score = max(0, 100 - weighted_deduction)
         else:
             overall_score = 0
 
@@ -432,63 +441,100 @@ class Orchestrator:
     ):
         """Save detected issues to the database."""
         from app.db.session import async_session_factory
-        from app.models.issue import Issue
+        from app.models.issue import Issue, IssueSeverity, WCAGLevel
         from app.models.page import Page
         from sqlalchemy import select
 
-        # Build selector -> bbox lookup
-        bbox_lookup: dict[str, dict] = {}
-        if bounding_boxes:
-            for bb in bounding_boxes:
-                selector = bb.get("selector")
-                if selector and bb.get("bbox"):
-                    bbox_lookup[selector] = bb["bbox"]
+        try:
+            # Build selector -> bbox lookup
+            bbox_lookup: dict[str, dict] = {}
+            if bounding_boxes:
+                for bb in bounding_boxes:
+                    selector = bb.get("selector")
+                    if selector and bb.get("bbox"):
+                        bbox_lookup[selector] = bb["bbox"]
 
-        async with async_session_factory() as db:
-            # Find or create page record
-            result = await db.execute(
-                select(Page).where(Page.task_id == self.task_id, Page.url == url)
-            )
-            page = result.scalar_one_or_none()
-
-            if not page:
-                page = Page(task_id=self.task_id, url=url)
-                db.add(page)
-                await db.flush()
-
-            # Update screenshot paths on the page
-            if screenshot_path:
-                page.screenshot_path = screenshot_path
-            if annotated_screenshot_path:
-                page.annotated_screenshot_path = annotated_screenshot_path
-
-            for issue_data in issues:
-                # Build context with bounding box if available
-                context = issue_data.get("context") or {}
-                selector = issue_data.get("element_selector")
-                if selector and selector in bbox_lookup:
-                    context["bounding_box"] = bbox_lookup[selector]
-
-                issue = Issue(
-                    task_id=self.task_id,
-                    page_id=page.id,
-                    wcag_criterion=issue_data.get("wcag_criterion", "unknown"),
-                    wcag_level=issue_data.get("wcag_level", "A"),
-                    rule_id=issue_data.get("rule_id", "ai-detection"),
-                    severity=issue_data.get("severity", "minor"),
-                    title=issue_data.get("title", "Untitled Issue"),
-                    description=issue_data.get("description", ""),
-                    recommendation=issue_data.get("recommendation"),
-                    element_selector=issue_data.get("element_selector"),
-                    element_html=issue_data.get("element_html"),
-                    screenshot_path=screenshot_path,
-                    detected_by=issue_data.get("detected_by", "ai"),
-                    confidence=issue_data.get("confidence"),
-                    context=context if context else None,
+            async with async_session_factory() as db:
+                # Find or create page record
+                result = await db.execute(
+                    select(Page).where(Page.task_id == self.task_id, Page.url == url)
                 )
-                db.add(issue)
+                page = result.scalar_one_or_none()
 
-            await db.commit()
+                if not page:
+                    page = Page(task_id=self.task_id, url=url)
+                    db.add(page)
+                    await db.flush()
+
+                # Update screenshot paths on the page
+                if screenshot_path:
+                    page.screenshot_path = screenshot_path
+                if annotated_screenshot_path:
+                    page.annotated_screenshot_path = annotated_screenshot_path
+
+                for issue_data in issues:
+                    # Build context with bounding box if available
+                    context = issue_data.get("context") or {}
+                    selector = issue_data.get("element_selector")
+                    if selector and selector in bbox_lookup:
+                        context["bounding_box"] = bbox_lookup[selector]
+
+                    # Normalize severity to valid IssueSeverity enum values
+                    raw_severity = issue_data.get("severity", "minor").lower()
+                    severity_map = {
+                        "critical": IssueSeverity.CRITICAL,
+                        "major": IssueSeverity.MAJOR,
+                        "minor": IssueSeverity.MINOR,
+                        "info": IssueSeverity.INFO,
+                        "serious": IssueSeverity.MAJOR,
+                        "moderate": IssueSeverity.MINOR,
+                        "high": IssueSeverity.CRITICAL,
+                        "low": IssueSeverity.MINOR,
+                        "medium": IssueSeverity.MAJOR,
+                    }
+                    severity = severity_map.get(raw_severity, IssueSeverity.MINOR)
+                    raw_wcag = issue_data.get("wcag_level", "A").upper()
+                    wcag_level_map = {"A": WCAGLevel.A, "AA": WCAGLevel.AA, "AAA": WCAGLevel.AAA}
+                    wcag_level = wcag_level_map.get(raw_wcag, WCAGLevel.A)
+
+                    issue = Issue(
+                        task_id=self.task_id,
+                        page_id=page.id,
+                        wcag_criterion=issue_data.get("wcag_criterion", "unknown"),
+                        wcag_level=wcag_level,
+                        rule_id=issue_data.get("rule_id", "ai-detection"),
+                        severity=severity,
+                        title=issue_data.get("title", "Untitled Issue"),
+                        description=issue_data.get("description", ""),
+                        recommendation=issue_data.get("recommendation"),
+                        element_selector=issue_data.get("element_selector"),
+                        element_html=issue_data.get("element_html"),
+                        screenshot_path=screenshot_path,
+                        detected_by=issue_data.get("detected_by", "ai"),
+                        confidence=issue_data.get("confidence"),
+                        context=context if context else None,
+                    )
+                    db.add(issue)
+
+                await db.commit()
+
+                logger.info(
+                    "issues_saved_to_db",
+                    task_id=self.task_id,
+                    url=url,
+                    issues_count=len(issues),
+                    page_id=str(page.id),
+                )
+        except Exception as e:
+            logger.error(
+                "save_issues_error",
+                task_id=self.task_id,
+                url=url,
+                issues_count=len(issues),
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            raise
 
     async def _save_report(self, state: PipelineState):
         """Save the generated report to the database."""
@@ -496,7 +542,9 @@ class Orchestrator:
         from app.db.session import async_session_factory
 
         async with async_session_factory() as db:
-            await ReportService.generate_report(self.task_id, db)
+            await ReportService.generate_report(
+                self.task_id, db, report_data=state.get("report_data")
+            )
 
     async def run(self, target_url: str) -> PipelineState:
         """Execute the full detection pipeline."""

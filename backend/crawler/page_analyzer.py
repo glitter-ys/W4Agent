@@ -121,23 +121,64 @@ class PageAnalyzer:
                 // Links
                 const links = Array.from(document.querySelectorAll('a[href]'))
                     .slice(0, 200)
-                    .map(a => ({
-                        href: a.href,
-                        text: a.textContent.trim().slice(0, 100),
-                        target: a.target,
-                        aria_label: a.getAttribute('aria-label'),
-                    }));
+                    .map(a => {
+                        let text = a.textContent.trim().slice(0, 100);
+                        // If no text content, try img alt or title as fallback
+                        if (!text) {
+                            const img = a.querySelector('img[alt]');
+                            if (img && img.alt.trim()) {
+                                text = img.alt.trim().slice(0, 100);
+                            } else {
+                                const svg = a.querySelector('svg[aria-label]');
+                                if (svg) {
+                                    text = svg.getAttribute('aria-label').trim().slice(0, 100);
+                                } else if (a.title) {
+                                    text = a.title.trim().slice(0, 100);
+                                }
+                            }
+                        }
+                        return {
+                            href: a.href,
+                            text: text,
+                            target: a.target,
+                            aria_label: a.getAttribute('aria-label'),
+                            aria_labelledby: a.getAttribute('aria-labelledby'),
+                            title: a.title || null,
+                        };
+                    });
 
                 // Interactive elements
                 const interactive = Array.from(document.querySelectorAll(
                     'button, [role="button"], input[type="submit"], input[type="button"]'
-                )).map(el => ({
-                    tag: el.tagName.toLowerCase(),
-                    text: el.textContent.trim().slice(0, 100),
-                    type: el.type || null,
-                    aria_label: el.getAttribute('aria-label'),
-                    disabled: el.disabled,
-                }));
+                )).map(el => {
+                    let text = el.textContent.trim().slice(0, 100);
+                    // If no text content, try child img alt / svg aria-label / title
+                    if (!text) {
+                        const img = el.querySelector('img[alt]');
+                        if (img && img.alt.trim()) {
+                            text = img.alt.trim().slice(0, 100);
+                        } else {
+                            const svg = el.querySelector('svg[aria-label]');
+                            if (svg) {
+                                text = svg.getAttribute('aria-label').trim().slice(0, 100);
+                            } else if (el.value) {
+                                text = el.value.trim().slice(0, 100);
+                            } else if (el.title) {
+                                text = el.title.trim().slice(0, 100);
+                            }
+                        }
+                    }
+                    return {
+                        tag: el.tagName.toLowerCase(),
+                        text: text,
+                        type: el.type || null,
+                        aria_label: el.getAttribute('aria-label'),
+                        aria_labelledby: el.getAttribute('aria-labelledby'),
+                        title: el.title || null,
+                        value: el.value || null,
+                        disabled: el.disabled,
+                    };
+                });
 
                 // ARIA landmarks
                 const landmarks = Array.from(document.querySelectorAll(
@@ -188,6 +229,17 @@ class PageAnalyzer:
 
                 // Sample text elements for contrast / spacing checks
                 const textTags = 'p, span, li, td, th, label, a, h1, h2, h3, h4, h5, h6, div, button';
+                function getEffectiveBgColor(el) {
+                    let current = el;
+                    while (current && current !== document.documentElement) {
+                        const bg = window.getComputedStyle(current).backgroundColor;
+                        if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
+                            return bg;
+                        }
+                        current = current.parentElement;
+                    }
+                    return 'rgb(255, 255, 255)';
+                }
                 const text_samples = Array.from(document.querySelectorAll(textTags))
                     .filter(el => el.textContent.trim().length > 0)
                     .slice(0, 60)
@@ -197,7 +249,7 @@ class PageAnalyzer:
                             tag: el.tagName.toLowerCase(),
                             text: el.textContent.trim().slice(0, 80),
                             color: style.color,
-                            background_color: style.backgroundColor,
+                            background_color: getEffectiveBgColor(el),
                             font_size: style.fontSize,
                             font_weight: style.fontWeight,
                             line_height: style.lineHeight,

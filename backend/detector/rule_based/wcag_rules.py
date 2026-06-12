@@ -6,35 +6,6 @@ from typing import Any
 from detector.rule_based.rule_registry import A11yRule, registry
 
 
-class ImageAltTextRule(A11yRule):
-    """WCAG 1.1.1 - Non-text Content: Images must have alt attributes."""
-
-    rule_id = "img-alt"
-    wcag_criterion = "1.1.1"
-    wcag_level = "A"
-    description = "All images must have alternative text"
-
-    def check(self, page_data: dict[str, Any]) -> list[dict]:
-        issues = []
-        for img in page_data.get("images", []):
-            if not img.get("has_alt"):
-                issues.append({
-                    "rule_id": self.rule_id,
-                    "wcag_criterion": self.wcag_criterion,
-                    "wcag_level": self.wcag_level,
-                    "severity": "critical",
-                    "title": "Image missing alt attribute",
-                    "description": f"Image element is missing the alt attribute. Source: {img.get('src', 'unknown')[:100]}",
-                    "recommendation": "Add a descriptive alt attribute to the image. Use alt=\"\" for decorative images.",
-                    "element_selector": f"img[src*='{img.get('src', '')[:50]}']",
-                    "detected_by": "rule",
-                })
-            elif img.get("alt", "").strip() == "" and img.get("role") != "presentation":
-                # Empty alt without presentation role — might be intentional for decorative
-                pass  # Not flagging empty alt, as it may be decorative
-        return issues
-
-
 class EmptyAltTextRule(A11yRule):
     """Check for images with meaningless alt text (e.g., 'image', 'photo')."""
 
@@ -235,8 +206,12 @@ class LinkTextRule(A11yRule):
         for link in page_data.get("links", []):
             text = (link.get("text") or "").strip().lower()
             aria_label = link.get("aria_label") or ""
+            aria_labelledby = link.get("aria_labelledby") or ""
+            title = link.get("title") or ""
 
-            if not text and not aria_label:
+            has_name = text or aria_label or aria_labelledby or title
+
+            if not has_name:
                 issues.append({
                     "rule_id": self.rule_id,
                     "wcag_criterion": self.wcag_criterion,
@@ -268,9 +243,13 @@ class LinkTextRule(A11yRule):
 
 
 def _parse_rgb(color_str: str) -> tuple[int, int, int] | None:
-    """Parse a CSS rgb/rgba color string into (r, g, b)."""
-    m = re.match(r"rgba?\(\s*(\d+),\s*(\d+),\s*(\d+)", color_str)
+    """Parse a CSS rgb/rgba color string into (r, g, b). Returns None for transparent colors."""
+    m = re.match(r"rgba?\(\s*(\d+),\s*(\d+),\s*(\d+)(?:,\s*([0-9.]+))?\)", color_str)
     if m:
+        # If alpha channel is present and zero, treat as transparent (skip)
+        alpha = m.group(4)
+        if alpha is not None and float(alpha) == 0:
+            return None
         return int(m.group(1)), int(m.group(2)), int(m.group(3))
     return None
 
@@ -290,51 +269,6 @@ def _contrast_ratio(fg: tuple[int, int, int], bg: tuple[int, int, int]) -> float
     lighter = max(l1, l2)
     darker = min(l1, l2)
     return (lighter + 0.05) / (darker + 0.05)
-
-
-class ContrastRatioRule(A11yRule):
-    """WCAG 1.4.3 - Contrast (Minimum): Text must have sufficient contrast."""
-
-    rule_id = "color-contrast"
-    wcag_criterion = "1.4.3"
-    wcag_level = "AA"
-    description = "Text must have a contrast ratio of at least 4.5:1 (3:1 for large text)"
-
-    def check(self, page_data: dict[str, Any]) -> list[dict]:
-        issues = []
-        for sample in page_data.get("text_samples", []):
-            fg = _parse_rgb(sample.get("color", ""))
-            bg = _parse_rgb(sample.get("background_color", ""))
-            if not fg or not bg:
-                continue
-
-            ratio = _contrast_ratio(fg, bg)
-            font_size_str = sample.get("font_size", "16px")
-            font_size = float(re.sub(r"[^\d.]", "", font_size_str) or "16")
-            font_weight = int(sample.get("font_weight", "400") or "400")
-            is_large = font_size >= 24 or (font_size >= 18.66 and font_weight >= 700)
-            min_ratio = 3.0 if is_large else 4.5
-
-            if ratio < min_ratio:
-                issues.append({
-                    "rule_id": self.rule_id,
-                    "wcag_criterion": self.wcag_criterion,
-                    "wcag_level": self.wcag_level,
-                    "severity": "critical" if ratio < 3.0 else "major",
-                    "title": "Insufficient color contrast",
-                    "description": (
-                        f"Text '{sample.get('text', '')[:40]}' has contrast ratio {ratio:.2f}:1 "
-                        f"(required: {min_ratio}:1). "
-                        f"Foreground: {sample.get('color')}, Background: {sample.get('background_color')}."
-                    ),
-                    "recommendation": (
-                        f"Increase the contrast ratio to at least {min_ratio}:1. "
-                        "Darken the text or lighten the background."
-                    ),
-                    "element_selector": sample.get("selector", ""),
-                    "detected_by": "rule",
-                })
-        return issues
 
 
 class ResizeTextRule(A11yRule):
@@ -424,36 +358,6 @@ class PageTitleRule(A11yRule):
             })
         return issues
 
-
-class FocusVisibleRule(A11yRule):
-    """WCAG 2.4.7 - Focus Visible: Interactive elements must have visible focus indicators."""
-
-    rule_id = "focus-visible"
-    wcag_criterion = "2.4.7"
-    wcag_level = "AA"
-    description = "Interactive elements must have visible focus indicators"
-
-    def check(self, page_data: dict[str, Any]) -> list[dict]:
-        issues = []
-        for el in page_data.get("focus_styles", []):
-            if el.get("has_outline_none"):
-                issues.append({
-                    "rule_id": self.rule_id,
-                    "wcag_criterion": self.wcag_criterion,
-                    "wcag_level": self.wcag_level,
-                    "severity": "major",
-                    "title": "Focus indicator removed",
-                    "description": (
-                        f"Element <{el.get('tag', '')}> '{el.get('text', '')[:40]}' "
-                        "has outline:none, which removes the visible focus indicator."
-                    ),
-                    "recommendation": (
-                        "Do not remove the default focus outline. If customizing, ensure a visible "
-                        "alternative focus style (e.g., box-shadow, border, or custom outline)."
-                    ),
-                    "detected_by": "rule",
-                })
-        return issues
 
 
 class InputPurposeRule(A11yRule):
@@ -586,8 +490,13 @@ class ButtonNameRule(A11yRule):
             tag = el.get("tag", "")
             text = (el.get("text") or "").strip()
             aria_label = el.get("aria_label") or ""
+            aria_labelledby = el.get("aria_labelledby") or ""
+            title = el.get("title") or ""
+            value = el.get("value") or ""
 
-            if not text and not aria_label:
+            has_name = text or aria_label or aria_labelledby or title or value
+
+            if not has_name:
                 issues.append({
                     "rule_id": self.rule_id,
                     "wcag_criterion": self.wcag_criterion,
@@ -1049,10 +958,985 @@ class LinkTargetBlankRule(A11yRule):
         return issues
 
 
+# ---------------------------------------------------------------------------
+# New rules – additional axe-core / WCAG coverage
+# ---------------------------------------------------------------------------
+
+
+class AreaAltRule(A11yRule):
+    """WCAG 1.1.1 - <area> elements must have alternative text."""
+
+    rule_id = "area-alt"
+    wcag_criterion = "1.1.1"
+    wcag_level = "A"
+    description = "<area> elements must have alternative text"
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        html = page_data.get("html", "")
+        if not html:
+            return issues
+        for m in re.finditer(r"<area\b([^>]*)>", html, re.IGNORECASE):
+            attrs = m.group(1)
+            has_alt = re.search(r'\balt\s*=\s*["\'][^"\']+["\']', attrs, re.IGNORECASE)
+            has_aria = re.search(r'\baria-label\s*=\s*["\'][^"\']+["\']', attrs, re.IGNORECASE)
+            has_aria_labelledby = re.search(r'\baria-labelledby\s*=', attrs, re.IGNORECASE)
+            if not has_alt and not has_aria and not has_aria_labelledby:
+                href = ""
+                href_m = re.search(r'\bhref\s*=\s*["\']([^"\']*)["\']', attrs, re.IGNORECASE)
+                if href_m:
+                    href = href_m.group(1)[:80]
+                issues.append({
+                    "rule_id": self.rule_id,
+                    "wcag_criterion": self.wcag_criterion,
+                    "wcag_level": self.wcag_level,
+                    "severity": "critical",
+                    "title": "<area> element missing alt text",
+                    "description": f"An <area> element (href='{href}') has no alt, aria-label, or aria-labelledby attribute.",
+                    "recommendation": "Add an alt attribute that describes the area's purpose.",
+                    "element_selector": f"area[href='{href}']" if href else "area",
+                    "detected_by": "rule",
+                })
+        return issues
+
+
+class AriaAllowedAttrRule(A11yRule):
+    """WCAG 4.1.2 - ARIA attributes must be compatible with the element's role."""
+
+    rule_id = "aria-allowed-attr"
+    wcag_criterion = "4.1.2"
+    wcag_level = "A"
+    description = "ARIA attributes must be compatible with the element's role"
+
+    # Mapping of roles to their allowed ARIA attributes (subset of most common)
+    ROLE_ALLOWED_ATTRS: dict[str, set[str]] = {
+        "alert": {"aria-atomic", "aria-busy", "aria-controls", "aria-describedby", "aria-details",
+                  "aria-flowto", "aria-label", "aria-labelledby", "aria-live", "aria-owns",
+                  "aria-relevant", "aria-roledescription"},
+        "button": {"aria-controls", "aria-describedby", "aria-details", "aria-disabled",
+                   "aria-expanded", "aria-flowto", "aria-haspopup", "aria-label",
+                   "aria-labelledby", "aria-owns", "aria-pressed", "aria-roledescription"},
+        "checkbox": {"aria-checked", "aria-controls", "aria-describedby", "aria-details",
+                     "aria-disabled", "aria-flowto", "aria-label", "aria-labelledby",
+                     "aria-owns", "aria-readonly", "aria-required", "aria-roledescription"},
+        "img": {"aria-describedby", "aria-details", "aria-flowto", "aria-label",
+                "aria-labelledby", "aria-roledescription"},
+        "link": {"aria-controls", "aria-describedby", "aria-details", "aria-disabled",
+                 "aria-expanded", "aria-flowto", "aria-haspopup", "aria-label",
+                 "aria-labelledby", "aria-owns", "aria-roledescription"},
+        "presentation": set(),
+        "none": set(),
+    }
+
+    # Global ARIA attributes allowed on any role
+    GLOBAL_ATTRS = {
+        "aria-atomic", "aria-busy", "aria-controls", "aria-current", "aria-describedby",
+        "aria-details", "aria-disabled", "aria-dropeffect", "aria-flowto", "aria-grabbed",
+        "aria-hidden", "aria-keyshortcuts", "aria-label", "aria-labelledby", "aria-live",
+        "aria-owns", "aria-relevant", "aria-roledescription",
+    }
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        for el in page_data.get("aria_elements", []):
+            role = (el.get("role") or "").strip().lower()
+            if not role or role not in self.ROLE_ALLOWED_ATTRS:
+                continue
+            allowed = self.ROLE_ALLOWED_ATTRS[role] | self.GLOBAL_ATTRS
+            for attr_name in el.get("aria_attrs", []):
+                if attr_name.startswith("aria-") and attr_name not in allowed:
+                    issues.append({
+                        "rule_id": self.rule_id,
+                        "wcag_criterion": self.wcag_criterion,
+                        "wcag_level": self.wcag_level,
+                        "severity": "critical",
+                        "title": f"ARIA attribute not allowed on role '{role}'",
+                        "description": (
+                            f"Element with role='{role}' has attribute '{attr_name}' "
+                            "which is not allowed for this role."
+                        ),
+                        "recommendation": f"Remove '{attr_name}' or change the element's role to one that supports it.",
+                        "element_selector": el.get("selector", ""),
+                        "detected_by": "rule",
+                    })
+        return issues
+
+
+class AriaHiddenFocusRule(A11yRule):
+    """WCAG 4.1.2 - aria-hidden elements must not be focusable or contain focusable elements."""
+
+    rule_id = "aria-hidden-focus"
+    wcag_criterion = "4.1.2"
+    wcag_level = "A"
+    description = "aria-hidden elements must not be focusable or contain focusable elements"
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        for el in page_data.get("aria_hidden_focusable", []):
+            issues.append({
+                "rule_id": self.rule_id,
+                "wcag_criterion": self.wcag_criterion,
+                "wcag_level": self.wcag_level,
+                "severity": "major",
+                "title": "Focusable element inside aria-hidden",
+                "description": (
+                    f"Element <{el.get('tag', '')}>'{el.get('text', '')[:40]}' "
+                    "is focusable but is contained within or has aria-hidden='true'. "
+                    "Screen readers will not announce this element."
+                ),
+                "recommendation": (
+                    "Remove aria-hidden='true' from the element or its ancestors, "
+                    "or set tabindex='-1' to make it not focusable."
+                ),
+                "element_selector": el.get("selector", ""),
+                "detected_by": "rule",
+            })
+        return issues
+
+
+class AriaRequiredAttrRule(A11yRule):
+    """WCAG 4.1.2 - ARIA roles must include all required attributes."""
+
+    rule_id = "aria-required-attr"
+    wcag_criterion = "4.1.2"
+    wcag_level = "A"
+    description = "ARIA roles must include all required attributes"
+
+    ROLE_REQUIRED_ATTRS: dict[str, list[str]] = {
+        "checkbox": ["aria-checked"],
+        "combobox": ["aria-expanded"],
+        "heading": ["aria-level"],
+        "meter": ["aria-valuenow"],
+        "option": ["aria-selected"],
+        "radio": ["aria-checked"],
+        "scrollbar": ["aria-controls", "aria-valuenow"],
+        "separator": ["aria-valuenow"],  # when focusable
+        "slider": ["aria-valuenow"],
+        "switch": ["aria-checked"],
+    }
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        for el in page_data.get("aria_elements", []):
+            role = (el.get("role") or "").strip().lower()
+            required = self.ROLE_REQUIRED_ATTRS.get(role)
+            if not required:
+                continue
+            present_attrs = set(el.get("aria_attrs", []))
+            for attr in required:
+                if attr not in present_attrs:
+                    issues.append({
+                        "rule_id": self.rule_id,
+                        "wcag_criterion": self.wcag_criterion,
+                        "wcag_level": self.wcag_level,
+                        "severity": "critical",
+                        "title": f"Missing required ARIA attribute for role '{role}'",
+                        "description": (
+                            f"Element with role='{role}' is missing required attribute '{attr}'."
+                        ),
+                        "recommendation": f"Add the required attribute '{attr}' to the element with role='{role}'.",
+                        "element_selector": el.get("selector", ""),
+                        "detected_by": "rule",
+                    })
+        return issues
+
+
+class AriaRequiredChildrenRule(A11yRule):
+    """WCAG 4.1.2 - Certain ARIA roles must contain required child roles."""
+
+    rule_id = "aria-required-children"
+    wcag_criterion = "4.1.2"
+    wcag_level = "A"
+    description = "ARIA roles must contain required child roles"
+
+    ROLE_REQUIRED_CHILDREN: dict[str, list[str]] = {
+        "list": ["listitem"],
+        "listbox": ["option"],
+        "menu": ["menuitem", "menuitemcheckbox", "menuitemradio"],
+        "menubar": ["menuitem", "menuitemcheckbox", "menuitemradio"],
+        "radiogroup": ["radio"],
+        "tablist": ["tab"],
+        "tree": ["treeitem"],
+        "grid": ["row", "rowgroup"],
+        "table": ["row", "rowgroup"],
+        "row": ["cell", "columnheader", "gridcell", "rowheader"],
+    }
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        for el in page_data.get("aria_elements", []):
+            role = (el.get("role") or "").strip().lower()
+            required_children = self.ROLE_REQUIRED_CHILDREN.get(role)
+            if not required_children:
+                continue
+            child_roles = set(el.get("child_roles", []))
+            if not child_roles & set(required_children):
+                issues.append({
+                    "rule_id": self.rule_id,
+                    "wcag_criterion": self.wcag_criterion,
+                    "wcag_level": self.wcag_level,
+                    "severity": "critical",
+                    "title": f"Role '{role}' missing required child roles",
+                    "description": (
+                        f"Element with role='{role}' must contain at least one child "
+                        f"with role: {', '.join(required_children)}."
+                    ),
+                    "recommendation": f"Add child elements with one of the required roles: {', '.join(required_children)}.",
+                    "element_selector": el.get("selector", ""),
+                    "detected_by": "rule",
+                })
+        return issues
+
+
+class AriaRequiredParentRule(A11yRule):
+    """WCAG 4.1.2 - Certain ARIA roles must be contained in required parent roles."""
+
+    rule_id = "aria-required-parent"
+    wcag_criterion = "4.1.2"
+    wcag_level = "A"
+    description = "ARIA roles must be contained within required parent roles"
+
+    ROLE_REQUIRED_PARENT: dict[str, list[str]] = {
+        "listitem": ["list"],
+        "option": ["listbox"],
+        "menuitem": ["menu", "menubar"],
+        "menuitemcheckbox": ["menu", "menubar"],
+        "menuitemradio": ["menu", "menubar"],
+        "tab": ["tablist"],
+        "treeitem": ["tree", "group"],
+        "cell": ["row"],
+        "columnheader": ["row"],
+        "gridcell": ["row"],
+        "rowheader": ["row"],
+        "row": ["grid", "table", "treegrid", "rowgroup"],
+    }
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        for el in page_data.get("aria_elements", []):
+            role = (el.get("role") or "").strip().lower()
+            required_parents = self.ROLE_REQUIRED_PARENT.get(role)
+            if not required_parents:
+                continue
+            parent_role = (el.get("parent_role") or "").strip().lower()
+            if parent_role not in required_parents:
+                issues.append({
+                    "rule_id": self.rule_id,
+                    "wcag_criterion": self.wcag_criterion,
+                    "wcag_level": self.wcag_level,
+                    "severity": "critical",
+                    "title": f"Role '{role}' not inside required parent",
+                    "description": (
+                        f"Element with role='{role}' must be contained in an element "
+                        f"with role: {', '.join(required_parents)}."
+                    ),
+                    "recommendation": f"Place this element inside a parent with one of the required roles: {', '.join(required_parents)}.",
+                    "element_selector": el.get("selector", ""),
+                    "detected_by": "rule",
+                })
+        return issues
+
+
+class AriaRolesRule(A11yRule):
+    """WCAG 4.1.2 - role attribute values must be valid."""
+
+    rule_id = "aria-roles"
+    wcag_criterion = "4.1.2"
+    wcag_level = "A"
+    description = "role attribute values must be valid ARIA roles"
+
+    VALID_ROLES = {
+        "alert", "alertdialog", "application", "article", "banner", "blockquote",
+        "button", "caption", "cell", "checkbox", "code", "columnheader", "combobox",
+        "complementary", "contentinfo", "definition", "deletion", "dialog", "directory",
+        "document", "emphasis", "feed", "figure", "form", "generic", "grid", "gridcell",
+        "group", "heading", "img", "insertion", "link", "list", "listbox", "listitem",
+        "log", "main", "marquee", "math", "meter", "menu", "menubar", "menuitem",
+        "menuitemcheckbox", "menuitemradio", "navigation", "none", "note", "option",
+        "paragraph", "presentation", "progressbar", "radio", "radiogroup", "region",
+        "row", "rowgroup", "rowheader", "scrollbar", "search", "searchbox", "separator",
+        "slider", "spinbutton", "status", "strong", "subscript", "superscript", "switch",
+        "tab", "table", "tablist", "tabpanel", "term", "textbox", "time", "timer",
+        "toolbar", "tooltip", "tree", "treegrid", "treeitem",
+    }
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        for el in page_data.get("aria_elements", []):
+            role_str = (el.get("role") or "").strip()
+            if not role_str:
+                continue
+            for role in role_str.split():
+                if role.lower() not in self.VALID_ROLES:
+                    issues.append({
+                        "rule_id": self.rule_id,
+                        "wcag_criterion": self.wcag_criterion,
+                        "wcag_level": self.wcag_level,
+                        "severity": "critical",
+                        "title": f"Invalid ARIA role '{role}'",
+                        "description": f"The role '{role}' is not a valid WAI-ARIA role.",
+                        "recommendation": "Use a valid ARIA role value. See WAI-ARIA specification for the full list.",
+                        "element_selector": el.get("selector", ""),
+                        "detected_by": "rule",
+                    })
+        return issues
+
+
+class AriaValidAttrRule(A11yRule):
+    """WCAG 4.1.2 - ARIA attribute names must be valid."""
+
+    rule_id = "aria-valid-attr"
+    wcag_criterion = "4.1.2"
+    wcag_level = "A"
+    description = "ARIA attribute names must be valid"
+
+    VALID_ARIA_ATTRS = {
+        "aria-activedescendant", "aria-atomic", "aria-autocomplete", "aria-braillelabel",
+        "aria-brailleroledescription", "aria-busy", "aria-checked", "aria-colcount",
+        "aria-colindex", "aria-colindextext", "aria-colspan", "aria-controls",
+        "aria-current", "aria-describedby", "aria-description", "aria-details",
+        "aria-disabled", "aria-dropeffect", "aria-errormessage", "aria-expanded",
+        "aria-flowto", "aria-grabbed", "aria-haspopup", "aria-hidden", "aria-invalid",
+        "aria-keyshortcuts", "aria-label", "aria-labelledby", "aria-level", "aria-live",
+        "aria-modal", "aria-multiline", "aria-multiselectable", "aria-orientation",
+        "aria-owns", "aria-placeholder", "aria-posinset", "aria-pressed", "aria-readonly",
+        "aria-relevant", "aria-required", "aria-roledescription", "aria-rowcount",
+        "aria-rowindex", "aria-rowindextext", "aria-rowspan", "aria-selected",
+        "aria-setsize", "aria-sort", "aria-valuemax", "aria-valuemin", "aria-valuenow",
+        "aria-valuetext",
+    }
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        for el in page_data.get("aria_elements", []):
+            for attr_name in el.get("aria_attrs", []):
+                if attr_name.startswith("aria-") and attr_name not in self.VALID_ARIA_ATTRS:
+                    issues.append({
+                        "rule_id": self.rule_id,
+                        "wcag_criterion": self.wcag_criterion,
+                        "wcag_level": self.wcag_level,
+                        "severity": "critical",
+                        "title": f"Invalid ARIA attribute '{attr_name}'",
+                        "description": f"The attribute '{attr_name}' is not a valid WAI-ARIA attribute.",
+                        "recommendation": "Use a valid ARIA attribute name. Check for typos in the attribute name.",
+                        "element_selector": el.get("selector", ""),
+                        "detected_by": "rule",
+                    })
+        return issues
+
+
+class AriaValidAttrValueRule(A11yRule):
+    """WCAG 4.1.2 - ARIA attribute values must be valid."""
+
+    rule_id = "aria-valid-attr-value"
+    wcag_criterion = "4.1.2"
+    wcag_level = "A"
+    description = "ARIA attribute values must be valid"
+
+    # Attributes with enumerated valid values
+    ENUM_ATTRS: dict[str, set[str]] = {
+        "aria-autocomplete": {"inline", "list", "both", "none"},
+        "aria-checked": {"true", "false", "mixed", "undefined"},
+        "aria-current": {"page", "step", "location", "date", "time", "true", "false"},
+        "aria-dropeffect": {"copy", "execute", "link", "move", "none", "popup"},
+        "aria-expanded": {"true", "false", "undefined"},
+        "aria-haspopup": {"true", "false", "menu", "listbox", "tree", "grid", "dialog"},
+        "aria-hidden": {"true", "false", "undefined"},
+        "aria-invalid": {"true", "false", "grammar", "spelling"},
+        "aria-live": {"assertive", "off", "polite"},
+        "aria-orientation": {"horizontal", "vertical", "undefined"},
+        "aria-pressed": {"true", "false", "mixed", "undefined"},
+        "aria-relevant": {"additions", "all", "removals", "text", "additions text"},
+        "aria-selected": {"true", "false", "undefined"},
+        "aria-sort": {"ascending", "descending", "none", "other"},
+    }
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        for el in page_data.get("aria_elements", []):
+            attr_values = el.get("aria_attr_values", {})
+            for attr_name, value in attr_values.items():
+                if attr_name in self.ENUM_ATTRS:
+                    valid_values = self.ENUM_ATTRS[attr_name]
+                    val_lower = str(value).strip().lower()
+                    if val_lower not in valid_values:
+                        issues.append({
+                            "rule_id": self.rule_id,
+                            "wcag_criterion": self.wcag_criterion,
+                            "wcag_level": self.wcag_level,
+                            "severity": "critical",
+                            "title": f"Invalid value for '{attr_name}'",
+                            "description": (
+                                f"The value '{value}' for '{attr_name}' is not valid. "
+                                f"Expected one of: {', '.join(sorted(valid_values))}."
+                            ),
+                            "recommendation": f"Set '{attr_name}' to one of the valid values: {', '.join(sorted(valid_values))}.",
+                            "element_selector": el.get("selector", ""),
+                            "detected_by": "rule",
+                        })
+        return issues
+
+
+class BypassRule(A11yRule):
+    """WCAG 2.4.1 - Bypass Blocks: Page must provide a mechanism to skip navigation."""
+
+    rule_id = "bypass"
+    wcag_criterion = "2.4.1"
+    wcag_level = "A"
+    description = "Pages must provide a mechanism to skip repeated blocks of content"
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        html = page_data.get("html", "")
+        if not html:
+            return issues
+
+        html_lower = html.lower()
+        has_skip_link = bool(re.search(r'<a\b[^>]*href\s*=\s*["\']#', html_lower))
+        has_main_landmark = bool(
+            re.search(r'<main\b', html_lower)
+            or re.search(r'role\s*=\s*["\']main["\']', html_lower)
+        )
+        has_nav_landmark = bool(
+            re.search(r'<nav\b', html_lower)
+            or re.search(r'role\s*=\s*["\']navigation["\']', html_lower)
+        )
+
+        if not has_skip_link and not has_main_landmark:
+            issues.append({
+                "rule_id": self.rule_id,
+                "wcag_criterion": self.wcag_criterion,
+                "wcag_level": self.wcag_level,
+                "severity": "major",
+                "title": "Page has no skip navigation mechanism",
+                "description": (
+                    "No skip link or <main> landmark was found. Users who rely on "
+                    "keyboard navigation need a way to bypass repeated content blocks."
+                ),
+                "recommendation": (
+                    "Add a skip link (e.g., <a href=\"#main\">Skip to main content</a>) "
+                    "or use a <main> landmark to allow assistive technology to jump to content."
+                ),
+                "detected_by": "rule",
+            })
+        return issues
+
+
+class DuplicateIdAriaRule(A11yRule):
+    """WCAG 4.1.1 - IDs used in ARIA and label attributes must be unique."""
+
+    rule_id = "duplicate-id-aria"
+    wcag_criterion = "4.1.1"
+    wcag_level = "A"
+    description = "IDs referenced by ARIA attributes and labels must be unique"
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        for dup in page_data.get("duplicate_ids", []):
+            is_aria_referenced = dup.get("aria_referenced", False)
+            if is_aria_referenced:
+                issues.append({
+                    "rule_id": self.rule_id,
+                    "wcag_criterion": self.wcag_criterion,
+                    "wcag_level": self.wcag_level,
+                    "severity": "critical",
+                    "title": "Duplicate ID used in ARIA/label reference",
+                    "description": (
+                        f"ID '{dup.get('id')}' appears {dup.get('count')} times and "
+                        "is referenced by an ARIA attribute or <label>. "
+                        "This can cause assistive technology to reference the wrong element."
+                    ),
+                    "recommendation": "Ensure each id used by aria-labelledby, aria-describedby, or <label for> is unique.",
+                    "element_selector": f"[id='{dup.get('id', '')}']",
+                    "detected_by": "rule",
+                })
+        return issues
+
+
+class FrameTitleRule(A11yRule):
+    """WCAG 4.1.2 - <iframe>/<frame> must have an accessible name (title)."""
+
+    rule_id = "frame-title"
+    wcag_criterion = "4.1.2"
+    wcag_level = "A"
+    description = "<iframe> and <frame> elements must have an accessible name"
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        for frame in page_data.get("frames", []):
+            title = (frame.get("title") or "").strip()
+            aria_label = (frame.get("aria_label") or "").strip()
+            aria_labelledby = (frame.get("aria_labelledby") or "").strip()
+            if not title and not aria_label and not aria_labelledby:
+                src = frame.get("src", "")[:80]
+                issues.append({
+                    "rule_id": self.rule_id,
+                    "wcag_criterion": self.wcag_criterion,
+                    "wcag_level": self.wcag_level,
+                    "severity": "major",
+                    "title": "Frame missing accessible name",
+                    "description": (
+                        f"<{frame.get('tag', 'iframe')}> (src='{src}') has no title, "
+                        "aria-label, or aria-labelledby attribute."
+                    ),
+                    "recommendation": "Add a descriptive title attribute to the <iframe>/<frame> element.",
+                    "element_selector": f"iframe[src*='{src[:50]}']" if src else "iframe",
+                    "detected_by": "rule",
+                })
+        return issues
+
+
+class InputImageAltRule(A11yRule):
+    """WCAG 1.1.1 - <input type='image'> must have alternative text."""
+
+    rule_id = "input-image-alt"
+    wcag_criterion = "1.1.1"
+    wcag_level = "A"
+    description = "<input type='image'> must have alternative text"
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        for form in page_data.get("forms", []):
+            for inp in form.get("inputs", []):
+                if inp.get("type") != "image":
+                    continue
+                alt = (inp.get("alt") or "").strip()
+                aria_label = (inp.get("aria_label") or "").strip()
+                if not alt and not aria_label:
+                    issues.append({
+                        "rule_id": self.rule_id,
+                        "wcag_criterion": self.wcag_criterion,
+                        "wcag_level": self.wcag_level,
+                        "severity": "critical",
+                        "title": "Image input missing alt text",
+                        "description": (
+                            f"<input type='image'> (name='{inp.get('name', '')}') "
+                            "has no alt or aria-label attribute."
+                        ),
+                        "recommendation": "Add an alt attribute that describes the button's action.",
+                        "element_selector": f"input[type='image'][name='{inp.get('name', '')}']",
+                        "detected_by": "rule",
+                    })
+        # Also check via HTML fallback
+        html = page_data.get("html", "")
+        if html:
+            for m in re.finditer(r'<input\b([^>]*type\s*=\s*["\']image["\'][^>]*)>', html, re.IGNORECASE):
+                attrs = m.group(1)
+                has_alt = re.search(r'\balt\s*=\s*["\'][^"\']+["\']', attrs, re.IGNORECASE)
+                has_aria = re.search(r'\baria-label\s*=\s*["\'][^"\']+["\']', attrs, re.IGNORECASE)
+                if not has_alt and not has_aria:
+                    # Only add if not already caught by form data above
+                    name_m = re.search(r'\bname\s*=\s*["\']([^"\']*)["\']', attrs)
+                    name = name_m.group(1) if name_m else ""
+                    already_found = any(
+                        i["element_selector"] == f"input[type='image'][name='{name}']"
+                        for i in issues
+                    )
+                    if not already_found:
+                        issues.append({
+                            "rule_id": self.rule_id,
+                            "wcag_criterion": self.wcag_criterion,
+                            "wcag_level": self.wcag_level,
+                            "severity": "critical",
+                            "title": "Image input missing alt text",
+                            "description": f"<input type='image'> has no alt or aria-label attribute.",
+                            "recommendation": "Add an alt attribute that describes the button's action.",
+                            "element_selector": f"input[type='image'][name='{name}']" if name else "input[type='image']",
+                            "detected_by": "rule",
+                        })
+        return issues
+
+
+class MetaRefreshRule(A11yRule):
+    """WCAG 2.2.1 - <meta http-equiv='refresh'> must not be used for delayed redirect."""
+
+    rule_id = "meta-refresh"
+    wcag_criterion = "2.2.1"
+    wcag_level = "A"
+    description = "Pages must not use <meta http-equiv='refresh'> for delayed redirect"
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        html = page_data.get("html", "")
+        if not html:
+            return issues
+
+        pattern = r'<meta\b[^>]*http-equiv\s*=\s*["\']refresh["\'][^>]*content\s*=\s*["\']([^"\']*)["\']'
+        for m in re.finditer(pattern, html, re.IGNORECASE):
+            content = m.group(1).strip()
+            # content like "5; url=..." or just "5"
+            delay_match = re.match(r"(\d+)", content)
+            if delay_match:
+                delay = int(delay_match.group(1))
+                if delay > 0:
+                    issues.append({
+                        "rule_id": self.rule_id,
+                        "wcag_criterion": self.wcag_criterion,
+                        "wcag_level": self.wcag_level,
+                        "severity": "critical",
+                        "title": "Page uses meta refresh to redirect",
+                        "description": (
+                            f"<meta http-equiv='refresh'> with delay of {delay} seconds found. "
+                            "Timed refreshes can disorient users."
+                        ),
+                        "recommendation": "Remove the meta refresh. Use server-side redirects (HTTP 301/302) instead.",
+                        "element_selector": "meta[http-equiv='refresh']",
+                        "detected_by": "rule",
+                    })
+        return issues
+
+
+class NestedInteractiveRule(A11yRule):
+    """WCAG 4.1.2 - Interactive controls must not be nested inside each other."""
+
+    rule_id = "nested-interactive"
+    wcag_criterion = "4.1.2"
+    wcag_level = "A"
+    description = "Interactive controls must not be nested inside other interactive controls"
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        for el in page_data.get("nested_interactive", []):
+            issues.append({
+                "rule_id": self.rule_id,
+                "wcag_criterion": self.wcag_criterion,
+                "wcag_level": self.wcag_level,
+                "severity": "major",
+                "title": "Nested interactive elements",
+                "description": (
+                    f"Interactive element <{el.get('child_tag', '')}>'{el.get('child_text', '')[:30]}' "
+                    f"is nested inside <{el.get('parent_tag', '')}>'{el.get('parent_text', '')[:30]}'."
+                ),
+                "recommendation": (
+                    "Do not nest interactive elements (buttons, links, inputs). "
+                    "Restructure the markup so each interactive control is independent."
+                ),
+                "element_selector": el.get("selector", ""),
+                "detected_by": "rule",
+            })
+        return issues
+
+
+class ScrollableRegionFocusableRule(A11yRule):
+    """WCAG 2.1.1 - Scrollable regions must be keyboard accessible."""
+
+    rule_id = "scrollable-region-focusable"
+    wcag_criterion = "2.1.1"
+    wcag_level = "A"
+    description = "Scrollable regions must be accessible via keyboard"
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        for el in page_data.get("scrollable_regions", []):
+            if not el.get("is_focusable", False) and not el.get("has_focusable_child", False):
+                issues.append({
+                    "rule_id": self.rule_id,
+                    "wcag_criterion": self.wcag_criterion,
+                    "wcag_level": self.wcag_level,
+                    "severity": "major",
+                    "title": "Scrollable region not keyboard accessible",
+                    "description": (
+                        f"A scrollable <{el.get('tag', 'div')}> element is not focusable "
+                        "and does not contain focusable content. Keyboard users cannot scroll it."
+                    ),
+                    "recommendation": (
+                        "Add tabindex='0' and an appropriate role (e.g., role='region') "
+                        "with an aria-label to make the scrollable area keyboard accessible."
+                    ),
+                    "element_selector": el.get("selector", ""),
+                    "detected_by": "rule",
+                })
+        return issues
+
+
+class SelectNameRule(A11yRule):
+    """WCAG 4.1.2 - <select> elements must have an accessible name."""
+
+    rule_id = "select-name"
+    wcag_criterion = "4.1.2"
+    wcag_level = "A"
+    description = "<select> elements must have an accessible name"
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        for form in page_data.get("forms", []):
+            for inp in form.get("inputs", []):
+                tag = inp.get("tag", "").lower()
+                if tag != "select":
+                    continue
+                has_label = inp.get("has_label", False)
+                has_aria = bool(inp.get("aria_label"))
+                has_aria_labelledby = bool(inp.get("aria_labelledby"))
+                has_title = bool(inp.get("title"))
+                if not has_label and not has_aria and not has_aria_labelledby and not has_title:
+                    issues.append({
+                        "rule_id": self.rule_id,
+                        "wcag_criterion": self.wcag_criterion,
+                        "wcag_level": self.wcag_level,
+                        "severity": "critical",
+                        "title": "<select> missing accessible name",
+                        "description": (
+                            f"<select> element (name='{inp.get('name', '')}') "
+                            "has no associated <label>, aria-label, aria-labelledby, or title."
+                        ),
+                        "recommendation": (
+                            "Add a <label> with a 'for' attribute matching the select's id, "
+                            "or add aria-label / aria-labelledby."
+                        ),
+                        "element_selector": f"select[name='{inp.get('name', '')}']",
+                        "detected_by": "rule",
+                    })
+        return issues
+
+
+class SvgImgAltRule(A11yRule):
+    """WCAG 1.1.1 - <svg> with role='img' must have alternative text."""
+
+    rule_id = "svg-img-alt"
+    wcag_criterion = "1.1.1"
+    wcag_level = "A"
+    description = "<svg> elements with role='img' must have alternative text"
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        for el in page_data.get("svg_images", []):
+            role = (el.get("role") or "").lower()
+            if role != "img":
+                continue
+            aria_label = (el.get("aria_label") or "").strip()
+            aria_labelledby = (el.get("aria_labelledby") or "").strip()
+            has_title = el.get("has_title_child", False)
+            if not aria_label and not aria_labelledby and not has_title:
+                issues.append({
+                    "rule_id": self.rule_id,
+                    "wcag_criterion": self.wcag_criterion,
+                    "wcag_level": self.wcag_level,
+                    "severity": "major",
+                    "title": "SVG image missing alternative text",
+                    "description": (
+                        "An <svg> element with role='img' has no aria-label, "
+                        "aria-labelledby, or <title> child element."
+                    ),
+                    "recommendation": (
+                        "Add aria-label, aria-labelledby, or a <title> child element "
+                        "to provide alternative text for the SVG image."
+                    ),
+                    "element_selector": el.get("selector", "svg[role='img']"),
+                    "detected_by": "rule",
+                })
+        return issues
+
+
+class TdHeadersAttrRule(A11yRule):
+    """WCAG 1.3.1 - Table <td> headers attribute must reference valid <th> ids."""
+
+    rule_id = "td-headers-attr"
+    wcag_criterion = "1.3.1"
+    wcag_level = "A"
+    description = "Table data cells using the headers attribute must reference valid header IDs"
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        for table in page_data.get("tables", []):
+            th_ids = set(table.get("th_ids", []))
+            for cell in table.get("cells_with_headers", []):
+                header_refs = cell.get("headers", "").split()
+                for ref in header_refs:
+                    if ref and ref not in th_ids:
+                        issues.append({
+                            "rule_id": self.rule_id,
+                            "wcag_criterion": self.wcag_criterion,
+                            "wcag_level": self.wcag_level,
+                            "severity": "major",
+                            "title": "Invalid headers reference in table cell",
+                            "description": (
+                                f"Table cell references header id='{ref}' "
+                                "which does not exist in the table."
+                            ),
+                            "recommendation": "Ensure the headers attribute references valid <th> id values in the same table.",
+                            "element_selector": cell.get("selector", "td[headers]"),
+                            "detected_by": "rule",
+                        })
+        return issues
+
+
+class ThHasDataCellsRule(A11yRule):
+    """WCAG 1.3.1 - Table <th> elements must be associated with data cells."""
+
+    rule_id = "th-has-data-cells"
+    wcag_criterion = "1.3.1"
+    wcag_level = "A"
+    description = "Table header cells must be associated with data cells"
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        for table in page_data.get("tables", []):
+            for th in table.get("orphan_headers", []):
+                issues.append({
+                    "rule_id": self.rule_id,
+                    "wcag_criterion": self.wcag_criterion,
+                    "wcag_level": self.wcag_level,
+                    "severity": "major",
+                    "title": "Table header not associated with data cells",
+                    "description": (
+                        f"<th> element '{th.get('text', '')[:40]}' is not associated with any data cells."
+                    ),
+                    "recommendation": (
+                        "Ensure <th> elements are in the correct position (row/column headers) "
+                        "or use the scope attribute to clarify associations."
+                    ),
+                    "element_selector": th.get("selector", "th"),
+                    "detected_by": "rule",
+                })
+        return issues
+
+
+class VideoCaptionRule(A11yRule):
+    """WCAG 1.2.2 - <video> elements must have captions."""
+
+    rule_id = "video-caption"
+    wcag_criterion = "1.2.2"
+    wcag_level = "A"
+    description = "<video> elements must provide captions"
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        html = page_data.get("html", "")
+        if not html:
+            return issues
+
+        for m in re.finditer(r"<video\b[^>]*>(.*?)</video>", html, re.IGNORECASE | re.DOTALL):
+            video_content = m.group(1)
+            has_track = bool(re.search(
+                r'<track\b[^>]*kind\s*=\s*["\'](?:captions|subtitles)["\']',
+                video_content, re.IGNORECASE
+            ))
+            if not has_track:
+                src_match = re.search(r'\bsrc\s*=\s*["\']([^"\']*)["\']', m.group(0), re.IGNORECASE)
+                src = src_match.group(1)[:80] if src_match else ""
+                issues.append({
+                    "rule_id": self.rule_id,
+                    "wcag_criterion": self.wcag_criterion,
+                    "wcag_level": self.wcag_level,
+                    "severity": "critical",
+                    "title": "Video missing captions",
+                    "description": (
+                        f"A <video> element{' (src=' + src + ')' if src else ''} "
+                        "does not have a <track kind='captions'> or <track kind='subtitles'>."
+                    ),
+                    "recommendation": (
+                        "Add a <track kind='captions' src='captions.vtt' srclang='...'> "
+                        "element inside the <video> to provide captions."
+                    ),
+                    "element_selector": f"video[src*='{src[:50]}']" if src else "video",
+                    "detected_by": "rule",
+                })
+        return issues
+
+
+class AutocompleteValidRule(A11yRule):
+    """WCAG 1.3.5 - autocomplete attribute values must be correct and appropriate."""
+
+    rule_id = "autocomplete-valid"
+    wcag_criterion = "1.3.5"
+    wcag_level = "AA"
+    description = "autocomplete attribute values must be correct and appropriate for the form field"
+
+    VALID_AUTOCOMPLETE_VALUES = {
+        "off", "on", "name", "honorific-prefix", "given-name", "additional-name",
+        "family-name", "honorific-suffix", "nickname", "email", "username",
+        "new-password", "current-password", "one-time-code", "organization-title",
+        "organization", "street-address", "address-line1", "address-line2",
+        "address-line3", "address-level4", "address-level3", "address-level2",
+        "address-level1", "country", "country-name", "postal-code", "cc-name",
+        "cc-given-name", "cc-additional-name", "cc-family-name", "cc-number",
+        "cc-exp", "cc-exp-month", "cc-exp-year", "cc-csc", "cc-type",
+        "transaction-currency", "transaction-amount", "language", "bday",
+        "bday-day", "bday-month", "bday-year", "sex", "tel", "tel-country-code",
+        "tel-national", "tel-area-code", "tel-local", "tel-extension", "impp",
+        "url", "photo",
+    }
+
+    # Section prefixes allowed before the autocomplete token
+    SECTION_PREFIX_RE = re.compile(r"^section-\S+$")
+    BILLING_SHIPPING = {"shipping", "billing"}
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        for inp in page_data.get("autocomplete_inputs", []):
+            raw = (inp.get("autocomplete") or "").strip()
+            if not raw or raw == "off" or raw == "on":
+                continue
+
+            tokens = raw.lower().split()
+            # Strip section- prefix and billing/shipping
+            filtered = [
+                t for t in tokens
+                if t not in self.BILLING_SHIPPING and not self.SECTION_PREFIX_RE.match(t)
+            ]
+            for token in filtered:
+                if token not in self.VALID_AUTOCOMPLETE_VALUES:
+                    issues.append({
+                        "rule_id": self.rule_id,
+                        "wcag_criterion": self.wcag_criterion,
+                        "wcag_level": self.wcag_level,
+                        "severity": "major",
+                        "title": f"Invalid autocomplete value '{token}'",
+                        "description": (
+                            f"Input '{inp.get('name', inp.get('id', 'unknown'))}' has "
+                            f"autocomplete value '{token}' which is not a valid autocomplete token."
+                        ),
+                        "recommendation": "Use a valid HTML autocomplete token (e.g., 'name', 'email', 'tel').",
+                        "element_selector": f"input[name='{inp.get('name', '')}']",
+                        "detected_by": "rule",
+                    })
+        return issues
+
+
+class AvoidInlineSpacingRule(A11yRule):
+    """WCAG 1.4.12 - Inline style text spacing must allow user customization."""
+
+    rule_id = "avoid-inline-spacing"
+    wcag_criterion = "1.4.12"
+    wcag_level = "AA"
+    description = "Inline style text spacing properties must allow user override"
+
+    SPACING_PROPS = ["letter-spacing", "word-spacing", "line-height"]
+
+    def check(self, page_data: dict[str, Any]) -> list[dict]:
+        issues = []
+        for el in page_data.get("inline_style_elements", []):
+            style = (el.get("style") or "").lower()
+            if not style:
+                continue
+            for prop in self.SPACING_PROPS:
+                if prop in style and "!important" in style:
+                    # Check if this specific property has !important
+                    pattern = rf"{re.escape(prop)}\s*:[^;]*!important"
+                    if re.search(pattern, style):
+                        issues.append({
+                            "rule_id": self.rule_id,
+                            "wcag_criterion": self.wcag_criterion,
+                            "wcag_level": self.wcag_level,
+                            "severity": "major",
+                            "title": f"Inline style locks '{prop}' with !important",
+                            "description": (
+                                f"Element <{el.get('tag', '')}> has inline style setting "
+                                f"'{prop}' with !important, preventing user customization."
+                            ),
+                            "recommendation": (
+                                f"Remove !important from the inline '{prop}' style, "
+                                "or move the style to a stylesheet where users can override it."
+                            ),
+                            "element_selector": el.get("selector", ""),
+                            "detected_by": "rule",
+                        })
+        return issues
+
+
 # Register all rules
 for rule_class in [
     # Level A rules
-    ImageAltTextRule,
     EmptyAltTextRule,
     FormLabelRule,
     HeadingHierarchyRule,
@@ -1067,10 +1951,29 @@ for rule_class in [
     LabelInNameRule,
     AutoplayMediaRule,
     FormErrorIdentificationRule,
+    AreaAltRule,
+    AriaAllowedAttrRule,
+    AriaHiddenFocusRule,
+    AriaRequiredAttrRule,
+    AriaRequiredChildrenRule,
+    AriaRequiredParentRule,
+    AriaRolesRule,
+    AriaValidAttrRule,
+    AriaValidAttrValueRule,
+    BypassRule,
+    DuplicateIdAriaRule,
+    FrameTitleRule,
+    InputImageAltRule,
+    MetaRefreshRule,
+    NestedInteractiveRule,
+    ScrollableRegionFocusableRule,
+    SelectNameRule,
+    SvgImgAltRule,
+    TdHeadersAttrRule,
+    ThHasDataCellsRule,
+    VideoCaptionRule,
     # Level AA rules
-    ContrastRatioRule,
     ResizeTextRule,
-    FocusVisibleRule,
     InputPurposeRule,
     LanguageOfPartsRule,
     TextSpacingRule,
@@ -1078,6 +1981,8 @@ for rule_class in [
     AriaLiveRegionRule,
     MultipleWaysRule,
     ImageLongAltRule,
+    AutocompleteValidRule,
+    AvoidInlineSpacingRule,
     # Level AAA rules
     LinkTargetBlankRule,
 ]:

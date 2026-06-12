@@ -18,7 +18,9 @@ class ReportService:
     """Service for generating and exporting detection reports."""
 
     @staticmethod
-    async def generate_report(task_id: str, db) -> Report:
+    async def generate_report(
+        task_id: str, db, report_data: dict | None = None
+    ) -> Report:
         """Generate a report from task detection results."""
         from sqlalchemy import select, func
         from app.models.task import Task
@@ -47,10 +49,14 @@ class ReportService:
         )
         total_pages = pages_q.scalar_one()
 
-        # Calculate compliance score (simplified)
+        # Calculate compliance score using severity-weighted formula
+        # Weights: critical=10, major=5, minor=2, info=0
+        critical = severity_counts.get("critical", 0)
+        major = severity_counts.get("major", 0)
+        minor = severity_counts.get("minor", 0)
         if total_pages > 0:
-            issues_per_page = total_issues / total_pages
-            overall_score = max(0, 100 - (issues_per_page * 10))
+            weighted_deduction = (critical * 10 + major * 5 + minor * 2) / total_pages
+            overall_score = max(0, 100 - weighted_deduction)
         else:
             overall_score = 0
 
@@ -60,17 +66,28 @@ class ReportService:
             "by_wcag_level": {},
         }
 
+        # Use LLM-generated summary/recommendations from orchestrator if available
+        summary = None
+        recommendations = None
+        if report_data:
+            summary = report_data.get("summary")
+            recommendations = report_data.get("recommendations")
+            if isinstance(recommendations, list):
+                recommendations = "\n".join(f"- {r}" for r in recommendations)
+
         report = Report(
             task_id=task_id,
             overall_score=round(overall_score, 1),
-            level_a_score=round(overall_score * 1.1, 1),  # Simplified
+            level_a_score=min(100, round(overall_score * 1.1, 1)),
             level_aa_score=round(overall_score, 1),
             level_aaa_score=round(overall_score * 0.9, 1),
             total_pages=total_pages,
             total_issues=total_issues,
-            critical_issues=severity_counts.get("critical", 0),
-            major_issues=severity_counts.get("major", 0),
-            minor_issues=severity_counts.get("minor", 0),
+            critical_issues=critical,
+            major_issues=major,
+            minor_issues=minor,
+            summary=summary,
+            recommendations=recommendations,
             issue_breakdown=issue_breakdown,
         )
 

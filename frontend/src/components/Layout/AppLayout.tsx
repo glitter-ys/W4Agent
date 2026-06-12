@@ -38,7 +38,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
             W4Agent
           </Title>
           <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: 12, marginTop: 4 }}>
-            Web无障碍���测系统
+            Web无障碍检测系统
           </div>
         </div>
         <Menu

@@ -3,6 +3,13 @@ import { Card, Form, Select, Input, Button, message, Divider, Typography, Space,
 
 const { Title, Text, Paragraph } = Typography;
 
+const providerModelMap: Record<string, string> = {
+  openai: 'gpt-4o',
+  claude: 'claude-sonnet-4-20250514',
+  local: 'llama3',
+  custom: '',
+};
+
 const Settings: React.FC = () => {
   const [form] = Form.useForm();
 
@@ -14,11 +21,31 @@ const Settings: React.FC = () => {
 
   const savedSettings = React.useMemo(() => {
     try {
-      return JSON.parse(localStorage.getItem('w4agent_settings') || '{}');
+      const settings = JSON.parse(localStorage.getItem('w4agent_settings') || '{}');
+
+      return {
+        ...settings,
+        model_name:
+          settings.model_name ||
+          settings.openai_model ||
+          settings.anthropic_model ||
+          settings.local_llm_model,
+        api_key: settings.api_key || settings.openai_api_key || settings.anthropic_api_key,
+      };
     } catch {
       return {};
     }
   }, []);
+
+  const selectedProvider = Form.useWatch('llm_provider', form);
+
+  const handleProviderChange = (provider: string) => {
+    const currentModelName = form.getFieldValue('model_name');
+
+    if (!currentModelName || Object.values(providerModelMap).includes(currentModelName)) {
+      form.setFieldValue('model_name', providerModelMap[provider]);
+    }
+  };
 
   return (
     <div style={{ maxWidth: 700, margin: '0 auto' }}>
@@ -28,25 +55,30 @@ const Settings: React.FC = () => {
           layout="vertical"
           initialValues={{
             llm_provider: 'openai',
-            openai_model: 'gpt-4o',
+            model_name: 'gpt-4o',
+            api_key: '',
             ...savedSettings,
           }}
         >
-          <Title level={5}>LLM 配置</Title>
-          <Form.Item name="llm_provider" label="LLM提供商">
-            <Select>
-              <Select.Option value="openai">OpenAI (GPT-4o)</Select.Option>
-              <Select.Option value="claude">Anthropic (Claude)</Select.Option>
-              <Select.Option value="local">本地模型 (Ollama)</Select.Option>
+          <Title level={5}>模型配置</Title>
+          <Form.Item name="llm_provider" label="模型提供商" rules={[{ required: true, message: '请选择模型提供商' }]}>
+            <Select onChange={handleProviderChange}>
+              <Select.Option value="openai">OpenAI</Select.Option>
+              <Select.Option value="claude">Anthropic Claude</Select.Option>
+              <Select.Option value="local">本地模型 / Ollama</Select.Option>
+              <Select.Option value="custom">自定义 / OpenAI 兼容</Select.Option>
             </Select>
           </Form.Item>
 
-          <Form.Item name="openai_api_key" label="OpenAI API Key">
-            <Input.Password placeholder="sk-..." />
+          <Form.Item name="model_name" label="模型名" rules={[{ required: true, message: '请输入模型名' }]}>
+            <Input placeholder="例如：gpt-4o、claude-sonnet-4-20250514、qwen-plus" />
           </Form.Item>
 
-          <Form.Item name="anthropic_api_key" label="Anthropic API Key">
-            <Input.Password placeholder="sk-ant-..." />
+          <Form.Item name="api_key" label="API Key" tooltip="仅保存在当前浏览器 localStorage 中">
+            <Input.Password
+              placeholder={selectedProvider === 'claude' ? 'sk-ant-...' : 'sk-...'}
+              autoComplete="off"
+            />
           </Form.Item>
 
           <Divider />
